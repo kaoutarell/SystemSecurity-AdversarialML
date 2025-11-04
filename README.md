@@ -65,7 +65,7 @@ pip install -r requirements.txt
 
 2. Datasets (download locally)
 
-**⚠️ VERY IMPORTANT ⚠️** : since the datasets are HUGE, they're not pushed to the repo.
+> **⚠️ VERY IMPORTANT ⚠️** : since the datasets are HUGE, they're not pushed to the repo.
 
 - Create a folder on root lvl of the project called : data
 - Download datasets (NSL-KDD) in /data (created above):
@@ -83,10 +83,10 @@ python train.py --train data/KDDTrain+.txt --test data/KDDTest+.txt --out_dir re
 **Expected Output** :
 In results/:
 
-- model.pth — trained model
-- artifacts.joblib — scaler + encoders
-- metrics.txt — performance
-- training curves (\*.png)
+- `model.pth` — trained model
+- `artifacts.joblib` — scaler + encoders
+- `metrics.txt` — performance
+- `training curves` (\*.png)
 
 ## Current Status
 
