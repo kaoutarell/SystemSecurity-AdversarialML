@@ -63,7 +63,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. Datasets (download locally)
+### 2. Datasets (download locally)
 
 > **⚠️ VERY IMPORTANT ⚠️** : since the datasets are HUGE, they're not pushed to the repo.
 
@@ -72,7 +72,7 @@ pip install -r requirements.txt
   [KDD Test+ Txt](https://www.kaggle.com/datasets/hassan06/nslkdd?select=KDDTest%2B.txt)
   [KDD Train+ Txt](https://www.kaggle.com/datasets/hassan06/nslkdd?select=KDDTrain%2B.txt)
 
-3. Train the model (commands)
+### 3. Train the model (commands)
 
 ```
 python train.py --train data/KDDTrain+.txt --test data/KDDTest+.txt --out_dir results --epochs 15 --batch_size 256
