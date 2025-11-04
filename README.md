@@ -45,9 +45,9 @@ Expectations :
 
 After cloning the repo :
 
-1. Set up the env
+### 1. Set up the env
 
-### Mac & Linux OSs
+*Mac & Linux OSs*
 
 ```
 python3 -m venv venv
@@ -55,7 +55,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Windows
+*Windows*
 
 ```
 python -m venv venv
@@ -64,7 +64,8 @@ pip install -r requirements.txt
 ```
 
 2. Datasets (download locally)
-   **VERY IMPORTANT** : since the datasets are HUGE, they're not pushed to the repo.
+
+**⚠️ VERY IMPORTANT ⚠️** : since the datasets are HUGE, they're not pushed to the repo.
 
 - Create a folder on root lvl of the project called : data
 - Download datasets (NSL-KDD) in /data (created above):
