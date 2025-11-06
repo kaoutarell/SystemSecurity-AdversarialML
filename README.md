@@ -117,7 +117,7 @@ In results/:
 | <Team Member 3> | Defense strategies & analysis         |
 | <Team Member 4> | Report & evaluation                   |
 | <Team Member 5> | Dataset engineering                   |
-| <Team Member 6> | Documentation & reproducibility       |
+| Ayesha          | Documentation & reproducibility       |
 
 ## License
 
