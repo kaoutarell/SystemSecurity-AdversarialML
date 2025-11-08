@@ -4,8 +4,12 @@ Main training script for IDS Neural Network.
 """
 
 import argparse
+import sys
 import tensorflow as tf
 from pathlib import Path
+
+# Add main directory to path
+sys.path.insert(0, str(Path(__file__).parent))
 
 from model import build_model, compile_model, create_callbacks, train_model
 from dataset import load_data, preprocess_data, prepare_datasets, save_artifacts

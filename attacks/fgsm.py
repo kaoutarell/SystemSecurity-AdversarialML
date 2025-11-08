@@ -13,8 +13,8 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from model import load_model
-from dataset import load_and_preprocess_file
+from main.model import load_model
+from main.dataset import load_and_preprocess_file
 
 
 def fgsm_attack(model, x, y, epsilon):
