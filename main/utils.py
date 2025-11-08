@@ -45,23 +45,10 @@ def get_next_run_dir(base_dir='results/runs', prefix='run'):
 
 
 def ensure_results_structure():
-    """
-    Ensure results directory structure exists.
-    
-    Creates:
-        results/
-        results/models/
-        results/runs/
-        results/attacks/
-    """
-    dirs = [
-        'results',
-        'results/models',
-        'results/runs',
-        'results/attacks'
-    ]
-    
-    for dir_path in dirs:
-        Path(dir_path).mkdir(parents=True, exist_ok=True)
-    
-    return Path('results')
+    base_path = Path('results')
+    base_path.mkdir(parents=True, exist_ok=True)
+    (base_path / 'models').mkdir(exist_ok=True)
+    (base_path / 'runs').mkdir(exist_ok=True)
+    (base_path / 'attacks').mkdir(exist_ok=True)
+
+

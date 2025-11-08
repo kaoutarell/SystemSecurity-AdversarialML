@@ -1,7 +1,3 @@
-"""
-Dataset loading and preprocessing for NSL-KDD dataset.
-"""
-
 import numpy as np
 import pandas as pd
 import joblib
@@ -32,15 +28,6 @@ DROP_COLUMNS = ['outcome', 'level']
 
 
 def load_data(filepath):
-    """
-    Load NSL-KDD dataset from file.
-    
-    Args:
-        filepath: Path to NSL-KDD data file
-    
-    Returns:
-        DataFrame with loaded data
-    """
     print(f"Loading data from {filepath}...")
     df = pd.read_csv(filepath, header=None)
 
@@ -59,47 +46,21 @@ def load_data(filepath):
 
 
 def preprocess_data(df, scaler=None, feature_columns=None):
-    """
-    Preprocess NSL-KDD dataset:
-    - Convert numeric columns
-    - Fill missing values
-    - Scale numerical features with RobustScaler
-    - Convert labels to binary (0=normal, 1=attack)
-    - One-hot encode categorical features
-    
-    Args:
-        df: Input DataFrame
-        scaler: Pre-fitted scaler (if None, fit new scaler)
-        feature_columns: Expected feature column order (for inference)
-    
-    Returns:
-        Tuple of (processed_df, scaler, feature_columns)
-    """
     df = df.copy()
     
-    # Convert numeric columns
     for col in ['duration', 'wrong_fragment']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     
     df = df.fillna(0)
-    
-    # Get numeric columns (before one-hot encoding)
     num_cols = df.drop(DROP_COLUMNS + CATEGORICAL_COLUMNS, axis=1).columns.tolist()
-    
-    # Fit scaler if not provided
+
     if scaler is None:
         scaler = RobustScaler()
         df[num_cols] = scaler.fit_transform(df[num_cols])
     else:
         df[num_cols] = scaler.transform(df[num_cols])
-    
-    # Convert labels to binary
     df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
-    
-    # One-hot encode categorical features
     df = pd.get_dummies(df, columns=CATEGORICAL_COLUMNS, drop_first=False)
-    
-    # Reindex to match expected feature columns (for inference)
     if feature_columns is not None:
         df = df.reindex(columns=list(feature_columns) + DROP_COLUMNS, fill_value=0)
     else:
@@ -109,17 +70,6 @@ def preprocess_data(df, scaler=None, feature_columns=None):
 
 
 def prepare_datasets(df, test_size=0.2, random_state=42):
-    """
-    Split data into train and test sets.
-    
-    Args:
-        df: Preprocessed DataFrame
-        test_size: Fraction of data for testing
-        random_state: Random seed for reproducibility
-    
-    Returns:
-        Tuple of (X_train, X_test, y_train, y_test)
-    """
     X = df.drop(DROP_COLUMNS, axis=1).values
     y = df[TARGET_COLUMN].values.astype(int)
     X = np.nan_to_num(X, nan=0.0)
@@ -133,11 +83,6 @@ def prepare_datasets(df, test_size=0.2, random_state=42):
     y_train = y_train.astype('float32')
     y_test = y_test.astype('float32')
     
-    print(f"\nDataset split:")
-    print(f"  Training: {X_train.shape[0]:,} samples")
-    print(f"  Testing:  {X_test.shape[0]:,} samples")
-    print(f"  Features: {X_train.shape[1]}")
-
     print(f"\n  Training set distribution:")
     unique, counts = np.unique(y_train, return_counts=True)
     for label, count in zip(unique, counts):
@@ -148,14 +93,6 @@ def prepare_datasets(df, test_size=0.2, random_state=42):
 
 
 def save_artifacts(scaler, feature_columns, output_path):
-    """
-    Save preprocessing artifacts (scaler and feature columns).
-    
-    Args:
-        scaler: Fitted scaler object
-        feature_columns: List of feature column names
-        output_path: Path to save artifacts
-    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -169,15 +106,6 @@ def save_artifacts(scaler, feature_columns, output_path):
 
 
 def load_artifacts(artifacts_path):
-    """
-    Load preprocessing artifacts.
-    
-    Args:
-        artifacts_path: Path to artifacts file
-    
-    Returns:
-        Dictionary with 'scaler' and 'feature_columns'
-    """
     artifacts_path = Path(artifacts_path)
     if not artifacts_path.exists():
         raise FileNotFoundError(f"Artifacts not found at: {artifacts_path}")
@@ -187,42 +115,24 @@ def load_artifacts(artifacts_path):
 
 
 def load_and_preprocess_file(filepath, artifacts_path, n_samples=None):
-    """
-    Load and preprocess a raw NSL-KDD file using saved artifacts.
-    
-    Args:
-        filepath: Path to NSL-KDD data file
-        artifacts_path: Path to saved artifacts (scaler, feature_columns)
-        n_samples: Number of samples to load (None for all)
-    
-    Returns:
-        Tuple of (X, y, original_df)
-        where y is binary labels (0=normal, 1=attack)
-    """
-    # Load artifacts
     artifacts = load_artifacts(artifacts_path)
     scaler = artifacts['scaler']
     feature_columns = artifacts['feature_columns']
-    
-    # Load raw data
     df = pd.read_csv(filepath, header=None)
+    
     if df.shape[1] > len(NSL_KDD_COLUMNS):
         df = df.iloc[:, :len(NSL_KDD_COLUMNS)]
     df.columns = NSL_KDD_COLUMNS
-    
-    # Limit samples if requested
+
     if n_samples is not None:
         df = df.head(n_samples)
-    
-    # Extract labels before preprocessing
+
     y = None
     if TARGET_COLUMN in df.columns:
         y = (df[TARGET_COLUMN] != 'normal').astype(int).values
     
-    # Preprocess using saved scaler and feature columns
     df_processed, _, _ = preprocess_data(df, scaler=scaler, feature_columns=feature_columns)
-    
-    # Extract features
+
     X = df_processed.drop(DROP_COLUMNS, axis=1).values.astype('float32')
     
     return X, y, df

@@ -1,197 +1,215 @@
-"""
-Model architecture and training logic for IDS Neural Network.
-"""
-
 import tensorflow as tf
 from tensorflow.keras import regularizers
 from pathlib import Path
 
 
-def build_model(input_dim, dropout_rate=0.3, l1=1e-5, l2=1e-4):
+def build_model(input_dim, dropout_rate=0.3, l1=1e-5, l2=1e-4, use_batchnorm=False):
     """
-    Build neural network model for intrusion detection.
+    Simple, proven architecture for NSL-KDD IDS.
     
-    Architecture:
-        - 4 hidden layers: 64 -> 128 -> 256 -> 64
-        - ReLU activation
-        - Dropout after each hidden layer
-        - L1/L2 regularization
-        - Sigmoid output for binary classification
+    Architecture: 64 -> 64 -> 32 -> 1
     
-    Args:
-        input_dim: Number of input features
-        dropout_rate: Dropout rate (default: 0.3)
-        l1: L1 regularization coefficient (default: 1e-5)
-        l2: L2 regularization coefficient (default: 1e-4)
-    
-    Returns:
-        Compiled Keras Sequential model
+    Key design decisions:
+    - NO BatchNormalization (causes instability with train/test distribution mismatch)
+    - Simple dropout regularization
+    - Moderate L1/L2 regularization
+    - He normal initialization for ReLU activations
     """
-    model = tf.keras.Sequential([
-        # Layer 1
-        tf.keras.layers.Dense(
-            64, activation='relu', input_shape=(input_dim,),
-            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
-        ),
-        tf.keras.layers.Dropout(dropout_rate),
-        
-        # Layer 2
-        tf.keras.layers.Dense(
-            128, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
-        ),
-        tf.keras.layers.Dropout(dropout_rate),
-        
-        # Layer 3
-        tf.keras.layers.Dense(
-            256, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
-        ),
-        tf.keras.layers.Dropout(dropout_rate),
-        
-        # Layer 4
-        tf.keras.layers.Dense(
-            64, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
-        ),
-        tf.keras.layers.Dropout(dropout_rate),
-        
-        # Output layer
-        tf.keras.layers.Dense(1, activation='sigmoid')
-    ])
+    
+    model = tf.keras.Sequential(name='ids_model')
+    
+    # First hidden layer: 64 units
+    model.add(tf.keras.layers.Dense(
+        64,
+        input_shape=(input_dim,),
+        activation='relu',
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    ))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Second hidden layer: 64 units
+    model.add(tf.keras.layers.Dense(
+        64,
+        activation='relu',
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    ))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Third hidden layer: 32 units
+    model.add(tf.keras.layers.Dense(
+        32,
+        activation='relu',
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    ))
+    model.add(tf.keras.layers.Dropout(dropout_rate * 0.5))
+    
+    # Output layer: binary classification
+    model.add(tf.keras.layers.Dense(
+        1,
+        activation='sigmoid',
+        kernel_regularizer=regularizers.L1L2(l1=l1*0.1, l2=l2*0.1)
+    ))
     
     return model
 
 
-def compile_model(model, learning_rate=0.001, optimizer_name='adam', clipnorm=None):
+def build_model_with_residual(input_dim, dropout_rate=0.3, l1=1e-5, l2=1e-4, use_batchnorm=True):
     """
-    Compile the model with specified optimizer and metrics.
-    
-    Args:
-        model: Keras model to compile
-        learning_rate: Learning rate for optimizer
-        optimizer_name: Name of optimizer ('adam' or 'sgd')
-        clipnorm: Gradient clipping norm (None to disable)
-    
-    Returns:
-        Compiled model
+    Alternative architecture with residual connection for better training stability.
+    Use this if the simpler model still shows instability.
     """
-    # Create optimizer
-    if optimizer_name.lower() == 'adam':
-        optimizer = tf.keras.optimizers.Adam(
-            learning_rate=learning_rate,
-            clipnorm=clipnorm if clipnorm and clipnorm > 0 else None
-        )
-    elif optimizer_name.lower() == 'sgd':
-        optimizer = tf.keras.optimizers.SGD(
-            learning_rate=learning_rate,
-            momentum=0.9,
-            clipnorm=clipnorm if clipnorm and clipnorm > 0 else None
-        )
-    else:
-        print(f"Unknown optimizer {optimizer_name}, defaulting to Adam")
-        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     
-    # Compile with binary crossentropy loss and metrics
+    inputs = tf.keras.Input(shape=(input_dim,))
+    
+    # Project input to consistent dimension
+    x = tf.keras.layers.Dense(
+        32,
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    )(inputs)
+    
+    if use_batchnorm:
+        x = tf.keras.layers.BatchNormalization(momentum=0.9)(x)
+    
+    x = tf.keras.layers.Activation('relu')(x)
+    residual = x
+    x = tf.keras.layers.Dropout(dropout_rate)(x)
+    
+    # Second block with residual
+    x = tf.keras.layers.Dense(
+        32,
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    )(x)
+    
+    if use_batchnorm:
+        x = tf.keras.layers.BatchNormalization(momentum=0.9)(x)
+    
+    x = tf.keras.layers.Add()([x, residual])  # Residual connection
+    x = tf.keras.layers.Activation('relu')(x)
+    x = tf.keras.layers.Dropout(dropout_rate * 0.7)(x)
+    
+    # Compression block
+    x = tf.keras.layers.Dense(
+        16,
+        kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+        kernel_initializer='he_normal'
+    )(x)
+    
+    if use_batchnorm:
+        x = tf.keras.layers.BatchNormalization(momentum=0.9)(x)
+    
+    x = tf.keras.layers.Activation('relu')(x)
+    
+    # Output
+    outputs = tf.keras.layers.Dense(
+        1,
+        activation='sigmoid',
+        kernel_regularizer=regularizers.L1L2(l1=l1*0.1, l2=l2*0.1)
+    )(x)
+    
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name='ids_residual_model')
+    
+    return model
+
+
+def build_lightweight_model(input_dim, dropout_rate=0.3, l1=1e-5, l2=1e-4):
+    """
+    Ultra-lightweight model if overfitting persists.
+    This is the minimum viable architecture for NSL-KDD.
+    """
+    
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(
+            24, 
+            input_shape=(input_dim,),
+            activation='relu',
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+            kernel_initializer='he_normal'
+        ),
+        tf.keras.layers.Dropout(dropout_rate),
+        
+        tf.keras.layers.Dense(
+            12,
+            activation='relu',
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2),
+            kernel_initializer='he_normal'
+        ),
+        tf.keras.layers.Dropout(dropout_rate * 0.7),
+        
+        tf.keras.layers.Dense(1, activation='sigmoid')
+    ], name='ids_lightweight_model')
+    
+    return model
+
+
+def compile_model(model, learning_rate=0.001, clipnorm=None):
+    """
+    Compile model with standard Adam optimizer.
+    Simple and proven configuration.
+    """
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=clipnorm if clipnorm and clipnorm > 0 else None,
+        epsilon=1e-7
+    )
+    
     model.compile(
         optimizer=optimizer,
         loss='binary_crossentropy',
         metrics=[
             'accuracy',
             tf.keras.metrics.Precision(name='precision'),
-            tf.keras.metrics.Recall(name='recall')
+            tf.keras.metrics.Recall(name='recall'),
+            tf.keras.metrics.AUC(name='auc')
         ]
     )
     
     return model
 
 
-def create_callbacks(output_dir, reduce_lr=True, reduce_factor=0.5, patience=3,
-                     min_lr=1e-7, early_stop=True, es_patience=8):
+def train_model(model, X_train, y_train, X_test, y_test, epochs=20, batch_size=64, 
+                patience=5, min_delta=0.001, verbose=1, class_weight=None):
     """
-    Create training callbacks for model checkpointing, learning rate reduction, and early stopping.
-    
-    Args:
-        output_dir: Directory to save model checkpoints
-        reduce_lr: Enable ReduceLROnPlateau callback
-        reduce_factor: Factor to reduce learning rate
-        patience: Epochs to wait before reducing LR
-        min_lr: Minimum learning rate
-        early_stop: Enable EarlyStopping callback
-        es_patience: Epochs to wait before early stopping
-    
-    Returns:
-        List of callbacks
-    """
-    callbacks = []
-    
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # ModelCheckpoint: save best weights
-    checkpoint_path = output_dir / 'nn_ids_model.keras'
-    callbacks.append(
-        tf.keras.callbacks.ModelCheckpoint(
-            str(checkpoint_path),
-            monitor='val_loss',
-            save_best_only=True,
-            verbose=1
-        )
-    )
-    
-    # ReduceLROnPlateau: reduce learning rate when validation loss plateaus
-    if reduce_lr:
-        callbacks.append(
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss',
-                factor=reduce_factor,
-                patience=patience,
-                min_lr=min_lr,
-                verbose=1
-            )
-        )
-    
-    # EarlyStopping: stop training if validation loss doesn't improve
-    if early_stop:
-        callbacks.append(
-            tf.keras.callbacks.EarlyStopping(
-                monitor='val_loss',
-                patience=es_patience,
-                restore_best_weights=True,
-                verbose=1
-            )
-        )
-    
-    return callbacks
-
-
-def train_model(model, X_train, y_train, X_test, y_test, epochs=20, batch_size=64,
-                callbacks=None, verbose=1):
-    """
-    Train the model on provided data.
-    
-    Args:
-        model: Compiled Keras model
-        X_train: Training features
-        y_train: Training labels
-        X_test: Validation features
-        y_test: Validation labels
-        epochs: Number of training epochs
-        batch_size: Batch size for training
-        callbacks: List of Keras callbacks
-        verbose: Verbosity level
-    
-    Returns:
-        Training history object
+    Training function with early stopping and learning rate reduction.
     """
     print("\n" + "="*60)
-    print("Training")
+    print("Training Configuration")
     print("="*60)
-    print("\nStarting training...")
+    print(f"  Model: {model.name}")
+    print(f"  Total parameters: {model.count_params():,}")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Training samples: {len(X_train):,}")
     print(f"  Validation samples: {len(X_test):,}")
+    print(f"  Early stopping patience: {patience} epochs")
+    print(f"  Class weights: {'Enabled' if class_weight else 'Disabled'}")
+    print("="*60 + "\n")
+    
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=patience,
+            min_delta=min_delta,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=max(3, patience//2),
+            min_lr=1e-6,
+            verbose=1
+        ),
+        tf.keras.callbacks.TensorBoard(
+            log_dir='./logs',
+            histogram_freq=0,
+            write_graph=False
+        )
+    ]
     
     history = model.fit(
         X_train, y_train,
@@ -199,24 +217,17 @@ def train_model(model, X_train, y_train, X_test, y_test, epochs=20, batch_size=6
         batch_size=batch_size,
         validation_data=(X_test, y_test),
         callbacks=callbacks,
+        class_weight=class_weight,
         verbose=verbose
     )
     
-    print("\n Training completed!")
+    print("\n✓ Training completed!")
     
     return history
 
 
 def load_model(model_path):
-    """
-    Load a saved Keras model.
-    
-    Args:
-        model_path: Path to saved model file
-    
-    Returns:
-        Loaded Keras model
-    """
+    """Load a saved model from disk."""
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found at: {model_path}")

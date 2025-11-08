@@ -21,7 +21,7 @@ data/
 *.pth
 *.joblib
 *.ckpt
-
+logs/
 # Results / logs
 results/*.png
 results/*.txt

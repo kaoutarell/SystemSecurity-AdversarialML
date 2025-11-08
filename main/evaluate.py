@@ -1,7 +1,3 @@
-"""
-Model evaluation, metrics computation, and visualization.
-"""
-
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,27 +6,19 @@ from pathlib import Path
 
 
 def evaluate_model(model, X_test, y_test, verbose=1):
-    """
-    Evaluate model performance on test data.
-    
-    Args:
-        model: Trained Keras model
-        X_test: Test features
-        y_test: Test labels
-        verbose: Verbosity level
-    
-    Returns:
-        Dictionary with evaluation metrics
-    """
     print("\n" + "="*60)
     print("Evaluation")
     print("="*60)
     print("\nEvaluating model...")
     
-    # Get predictions
-    loss, accuracy, precision, recall = model.evaluate(X_test, y_test, verbose=verbose)
-    
-    # Get predictions for classification report
+    # Model now returns 5 metrics: loss, accuracy, precision, recall, auc
+    eval_results = model.evaluate(X_test, y_test, verbose=verbose)
+    loss = eval_results[0]
+    accuracy = eval_results[1]
+    precision = eval_results[2]
+    recall = eval_results[3]
+    auc = eval_results[4] if len(eval_results) > 4 else None
+
     y_pred_probs = model.predict(X_test, verbose=0)
     y_pred = (y_pred_probs > 0.5).astype(int).flatten()
     
@@ -41,12 +29,17 @@ def evaluate_model(model, X_test, y_test, verbose=1):
         'loss': float(loss)
     }
     
+    if auc is not None:
+        metrics['auc'] = float(auc)
+    
     print("\n" + "="*60)
     print("MODEL PERFORMANCE")
     print("="*60)
     print(f"  Accuracy:  {accuracy:.4f} ({accuracy*100:.2f}%)")
     print(f"  Precision: {precision:.4f} ({precision*100:.2f}%)")
     print(f"  Recall:    {recall:.4f} ({recall*100:.2f}%)")
+    if auc is not None:
+        print(f"  AUC:       {auc:.4f} ({auc*100:.2f}%)")
     print(f"  Loss:      {loss:.4f}")
     print("="*60)
     
@@ -54,30 +47,11 @@ def evaluate_model(model, X_test, y_test, verbose=1):
 
 
 def print_classification_report(y_true, y_pred):
-    """
-    Print detailed classification report.
-    
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-    """
-    print("\nClassification Report:")
     target_names = ['Normal', 'Attack']
     print(classification_report(y_true, y_pred, target_names=target_names))
 
 
 def plot_confusion_matrix(y_true, y_pred, output_path=None):
-    """
-    Plot and save confusion matrix.
-    
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        output_path: Path to save plot (None to skip saving)
-    
-    Returns:
-        Figure object
-    """
     cm = confusion_matrix(y_true, y_pred)
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
     
@@ -97,19 +71,9 @@ def plot_confusion_matrix(y_true, y_pred, output_path=None):
 
 
 def plot_training_curves(history, output_path=None):
-    """
-    Plot training and validation curves.
     
-    Args:
-        history: Keras History object from model.fit()
-        output_path: Path to save plot (None to skip saving)
-    
-    Returns:
-        Figure object
-    """
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # Accuracy
     axes[0, 0].plot(history.history['accuracy'], label='Train', linewidth=2)
     axes[0, 0].plot(history.history['val_accuracy'], label='Validation', linewidth=2)
     axes[0, 0].set_title('Model Accuracy', fontsize=12, fontweight='bold')
@@ -117,8 +81,7 @@ def plot_training_curves(history, output_path=None):
     axes[0, 0].set_xlabel('Epoch')
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
-    
-    # Loss
+
     axes[0, 1].plot(history.history['loss'], label='Train', linewidth=2)
     axes[0, 1].plot(history.history['val_loss'], label='Validation', linewidth=2)
     axes[0, 1].set_title('Model Loss', fontsize=12, fontweight='bold')
@@ -126,8 +89,7 @@ def plot_training_curves(history, output_path=None):
     axes[0, 1].set_xlabel('Epoch')
     axes[0, 1].legend()
     axes[0, 1].grid(True, alpha=0.3)
-    
-    # Precision
+
     axes[1, 0].plot(history.history['precision'], label='Train', linewidth=2)
     axes[1, 0].plot(history.history['val_precision'], label='Validation', linewidth=2)
     axes[1, 0].set_title('Model Precision', fontsize=12, fontweight='bold')
@@ -135,8 +97,7 @@ def plot_training_curves(history, output_path=None):
     axes[1, 0].set_xlabel('Epoch')
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
-    
-    # Recall
+
     axes[1, 1].plot(history.history['recall'], label='Train', linewidth=2)
     axes[1, 1].plot(history.history['val_recall'], label='Validation', linewidth=2)
     axes[1, 1].set_title('Model Recall', fontsize=12, fontweight='bold')
@@ -158,13 +119,6 @@ def plot_training_curves(history, output_path=None):
 
 
 def save_metrics(metrics, output_path):
-    """
-    Save metrics to JSON file.
-    
-    Args:
-        metrics: Dictionary of metrics
-        output_path: Path to save JSON file
-    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -175,17 +129,9 @@ def save_metrics(metrics, output_path):
 
 
 def save_training_history(history, output_path):
-    """
-    Save training history to JSON file.
-    
-    Args:
-        history: Keras History object
-        output_path: Path to save JSON file
-    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert history to serializable format
     history_dict = {
         key: [float(val) for val in values]
         for key, values in history.history.items()
