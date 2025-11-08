@@ -4,13 +4,14 @@ import argparse
 import sys
 import numpy as np
 import tensorflow as tf
+import joblib
 from pathlib import Path
 
 # Add main directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from model import build_model, compile_model, train_model
-from dataset import load_data, preprocess_data, prepare_datasets, save_artifacts
+from base_model import build_model, compile_model, train_model
+from dataset import load_data, preprocess_data, prepare_datasets
 from evaluate import evaluate_model, print_classification_report, plot_confusion_matrix, plot_training_curves, save_metrics, save_training_history
 from utils import get_next_run_dir, ensure_results_structure
 
@@ -23,10 +24,10 @@ def main():
                         help='Path to training data')
     parser.add_argument('--test_path', type=str, default='nsl-kdd/KDDTest+.txt',
                         help='Path to test data (for validation during training)')
-    parser.add_argument('--val_split', type=float, default=0.2,
-                        help='Fraction of training data for validation (if test_path not used)')
+    parser.add_argument('--val_split', type=float, default=0.15,
+                        help='Fraction of training data for validation (default: 0.15 = 15%)')
     parser.add_argument('--use_separate_test', action='store_true', default=False,
-                        help='Use separate test file for validation instead of splitting train')
+                        help='Use separate test file for final evaluation (not during training)')
     parser.add_argument('--random_state', type=int, default=42,
                         help='Random seed for reproducibility')
     
@@ -89,28 +90,36 @@ def main():
     print("="*60)
     
     df = load_data(args.train_path)
-    df_processed, scaler, feature_columns = preprocess_data(df)
-    print(f"  After preprocessing: {df_processed.shape[1]} features")
+    X_images, y_train_full, scaler, feature_columns = preprocess_data(df, image_size=12)
     
+    # Flatten images to 1D features for dense neural network
+    X_flat = X_images.reshape(X_images.shape[0], -1)
+    print(f"  Flattened to: {X_flat.shape[1]} features for dense network")
+    
+    # Always split training data for validation (stratified)
+    print(f"\n  Splitting training data ({args.val_split*100:.0f}% for validation)")
+    X_train, X_val, y_train, y_val = prepare_datasets(
+        X_flat, y_train_full,
+        val_split=args.val_split,
+        random_state=args.random_state
+    )
+    
+    # Load separate test set for final evaluation (if specified)
     if args.use_separate_test:
-        print(f"\n  Using separate test file for validation: {args.test_path}")
-        X_train = df_processed.drop(['outcome', 'level'], axis=1).values.astype('float32')
-        y_train = df_processed['outcome'].values.astype('float32')
-        
+        print(f"\n  Loading separate test file for final evaluation: {args.test_path}")
         df_test = load_data(args.test_path)
-        df_test_processed, _, _ = preprocess_data(df_test, scaler=scaler, feature_columns=feature_columns)
-        X_test = df_test_processed.drop(['outcome', 'level'], axis=1).values.astype('float32')
-        y_test = df_test_processed['outcome'].values.astype('float32')
+        X_test_images, y_test, _, _ = preprocess_data(df_test, scaler=scaler, feature_columns=feature_columns, image_size=12)
+        X_test = X_test_images.reshape(X_test_images.shape[0], -1).astype('float32')
+        y_test = y_test.astype('float32')
         
-        print(f"  Training samples: {len(X_train):,}")
-        print(f"  Validation samples: {len(X_test):,}")
+        print(f"  Test samples: {len(X_test):,}")
+        print(f"\n  Test set distribution:")
+        unique, counts = np.unique(y_test, return_counts=True)
+        for label, count in zip(unique, counts):
+            label_name = 'Normal' if label == 0 else 'Attack'
+            print(f"    {label_name}: {count:,} ({count/len(y_test)*100:.1f}%)")
     else:
-        print(f"\n  Splitting training data ({args.val_split*100:.0f}% for validation)")
-        X_train, X_test, y_train, y_test = prepare_datasets(
-            df_processed,
-            test_size=args.val_split,
-            random_state=args.random_state
-        )
+        X_test, y_test = None, None
     
     # Build model
     print("\n" + "="*60)
@@ -141,12 +150,13 @@ def main():
     
     print(f"\n  Output directory: {output_dir}")
     
+    # Train with validation split
     history = train_model(
         model=model,
         X_train=X_train,
         y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
+        X_test=X_val,  # Use validation set during training
+        y_test=y_val,
         epochs=args.epochs,
         batch_size=args.batch_size,
         patience=args.patience,
@@ -156,9 +166,17 @@ def main():
     
     model.save(output_dir / 'nn_ids_model.keras')
     
-    # Evaluate model
-    metrics, y_pred = evaluate_model(model, X_test, y_test, verbose=0)
-    print_classification_report(y_test, y_pred)
+    # Evaluate on test set (if available) or validation set
+    eval_X = X_test if args.use_separate_test else X_val
+    eval_y = y_test if args.use_separate_test else y_val
+    eval_set_name = "Test" if args.use_separate_test else "Validation"
+    
+    print("\n" + "="*60)
+    print(f"Final Evaluation on {eval_set_name} Set")
+    print("="*60)
+    
+    metrics, y_pred = evaluate_model(model, eval_X, eval_y, verbose=0)
+    print_classification_report(eval_y, y_pred)
     
     # Save results
     print("\n" + "="*60)
@@ -168,15 +186,24 @@ def main():
     # Save to run directory
     save_metrics(metrics, output_dir / 'metrics.json')
     save_training_history(history, output_dir / 'training_history.json')
-    plot_confusion_matrix(y_test, y_pred, output_dir / 'confusion_matrix.png')
+    plot_confusion_matrix(eval_y, y_pred, output_dir / 'confusion_matrix.png')
     plot_training_curves(history, output_dir / 'training_curves.png')
-    save_artifacts(scaler, feature_columns, output_dir / 'artifacts.joblib')
+    
+    # Save artifacts (compatible format)
+    artifacts = {
+        'scaler': scaler,
+        'feature_columns': feature_columns,
+        'image_size': 12
+    }
+    joblib.dump(artifacts, output_dir / 'artifacts.joblib')
+    print(f"Artifacts saved to {output_dir / 'artifacts.joblib'}")
     
     # Also save to models directory for easy access
     models_dir = Path(args.save_models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
     model.save(models_dir / 'nn_ids_model.keras')
-    save_artifacts(scaler, feature_columns, models_dir / 'artifacts.joblib')
+    joblib.dump(artifacts, models_dir / 'artifacts.joblib')
+    print(f"Artifacts saved to {models_dir / 'artifacts.joblib'}")
     print(f"\n✓ Model and artifacts also saved to {models_dir}/")
     
     print("\n" + "="*60)
