@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import joblib
 import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -42,6 +43,16 @@ def load_data(filepath):
     """Load NSL-KDD dataset from file."""
     print(f"Loading data from {filepath}...")
     df = pd.read_csv(filepath)
+
+    # Some NSL-KDD files include a difficulty column at the end. If the
+    # number of columns is greater than our expected schema, drop the last
+    # column (difficulty) so the column count matches `NSL_KDD_COLUMNS`.
+    if df.shape[1] > len(NSL_KDD_COLUMNS):
+        print("  Detected extra column(s) (e.g. difficulty). Removing trailing columns to match schema...")
+        # keep only the first N expected columns
+        df = df.iloc[:, :len(NSL_KDD_COLUMNS)]
+
+    # Assign column names (will raise if mismatch remains)
     df.columns = NSL_KDD_COLUMNS
     
     print(f"  Loaded: {df.shape[0]:,} samples, {df.shape[1]} features")
@@ -114,34 +125,35 @@ def build_model(input_dim, architecture='default'):
         - L1/L2 regularization
         - Sigmoid output for binary classification
     """
+def build_model(input_dim, architecture='default', dropout_rate=0.3, l1=1e-5, l2=1e-4):
     model = tf.keras.Sequential([
         # Layer 1
         tf.keras.layers.Dense(
             64, activation='relu', input_shape=(input_dim,),
-            kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
         ),
-        tf.keras.layers.Dropout(0.3),
+        tf.keras.layers.Dropout(dropout_rate),
         
         # Layer 2
         tf.keras.layers.Dense(
             128, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
         ),
-        tf.keras.layers.Dropout(0.3),
+        tf.keras.layers.Dropout(dropout_rate),
         
         # Layer 3
         tf.keras.layers.Dense(
             256, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
         ),
-        tf.keras.layers.Dropout(0.3),
+        tf.keras.layers.Dropout(dropout_rate),
         
         # Layer 4
         tf.keras.layers.Dense(
             64, activation='relu',
-            kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)
+            kernel_regularizer=regularizers.L1L2(l1=l1, l2=l2)
         ),
-        tf.keras.layers.Dropout(0.3),
+        tf.keras.layers.Dropout(dropout_rate),
         
         # Output layer
         tf.keras.layers.Dense(1, activation='sigmoid')
@@ -159,7 +171,7 @@ def build_model(input_dim, architecture='default'):
 
 
 def train_model(model, X_train, y_train, X_test, y_test, 
-                epochs=10, batch_size=256):
+                epochs=10, batch_size=256, callbacks=None):
     """Train the neural network model."""
     print("\nStarting training...")
     print(f"  Epochs: {epochs}")
@@ -172,6 +184,7 @@ def train_model(model, X_train, y_train, X_test, y_test,
         validation_data=(X_test, y_test),
         epochs=epochs,
         batch_size=batch_size,
+        callbacks=callbacks,
         verbose=1
     )
     
@@ -282,16 +295,40 @@ def plot_confusion_matrix(cm, save_path=None):
     plt.close()
 
 
-def save_model_and_results(model, history, metrics_dict, output_dir='output'):
+def save_model_and_results(model, history, metrics_dict, output_dir='output', scaler=None, feature_columns=None):
     """Save trained model, history, and metrics."""
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
-    
+
     print(f"\nSaving results to {output_dir}/...")
 
     model_path = output_dir / 'nn_ids_model.keras'
     model.save(model_path)
     print(f"  ✓ Model saved: {model_path}")
+
+    # Also save a copy in the common models directory for quick reuse by other
+    # scripts (adversarial attack, inference). If a `models` directory exists in
+    # the repo root we'll place a copy there so other tools can reference it.
+    models_dir = Path('models')
+    try:
+        models_dir.mkdir(exist_ok=True)
+        models_copy = models_dir / 'nn_ids_model.keras'
+        # use TensorFlow save (copying the saved model folder/file)
+        if model_path.is_dir():
+            # saved model as directory -> copytree
+            import shutil
+            if models_copy.exists():
+                shutil.rmtree(models_copy)
+            shutil.copytree(model_path, models_copy)
+        else:
+            # single file format (.keras/.h5)
+            import shutil
+            shutil.copy2(model_path, models_copy)
+
+        print(f"  ✓ Model copy saved to: {models_copy}")
+    except Exception:
+        # non-fatal: continue if copying fails
+        pass
 
     history_dict = {
         'accuracy': [float(x) for x in history.history['accuracy']],
@@ -309,6 +346,156 @@ def save_model_and_results(model, history, metrics_dict, output_dir='output'):
     with open(metrics_path, 'w') as f:
         json.dump(metrics_dict, f, indent=2)
     print(f"  ✓ Metrics saved: {metrics_path}")
+
+    # Save preprocessing artifacts (scaler + feature column ordering) so
+    # other scripts (attacks/inference) can reproduce preprocessing.
+    try:
+        artifacts = {}
+        if scaler is not None:
+            artifacts['scaler'] = scaler
+        if feature_columns is not None:
+            artifacts['feature_columns'] = list(feature_columns)
+
+        if artifacts:
+            artifacts_path = output_dir / 'artifacts.joblib'
+            joblib.dump(artifacts, artifacts_path)
+            print(f"  ✓ Preprocessing artifacts saved: {artifacts_path}")
+            # also copy to models/ alongside the model copy
+            models_dir = Path('models')
+            models_dir.mkdir(exist_ok=True)
+            import shutil
+            shutil.copy2(artifacts_path, models_dir / 'artifacts.joblib')
+    except Exception:
+        pass
+
+
+def next_run_dir(base_name: str = 'results_nn_run') -> Path:
+    """Create a new incremental results directory based on base_name.
+
+    Examples: results_nn_run_001, results_nn_run_002, ...
+    """
+    parent = Path('.')
+    # Find existing dirs that match pattern base_name_### (numeric suffix)
+    siblings = [p for p in parent.iterdir() if p.is_dir() and p.name.startswith(f"{base_name}_")]
+    max_idx = 0
+    for s in siblings:
+        parts = s.name.rsplit('_', 1)
+        if len(parts) != 2:
+            continue
+        suffix = parts[1]
+        if not suffix.isdigit():
+            continue
+        try:
+            idx = int(suffix)
+            if idx > max_idx:
+                max_idx = idx
+        except Exception:
+            continue
+
+    next_idx = max_idx + 1
+    candidate = Path(f"{base_name}_{next_idx:03d}")
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+class IDSModel:
+    """Helper wrapper to load a trained Keras model and preprocessing artifacts
+    and run reproducible preprocessing + inference for NSL-KDD samples.
+    """
+    def __init__(self, model_path: str = 'models/nn_ids_model.keras', artifacts_path: str = 'models/artifacts.joblib'):
+        self.model_path = Path(model_path)
+        self.artifacts_path = Path(artifacts_path)
+        self.model = None
+        self.artifacts = None
+
+    def load(self):
+        if not self.model_path.exists():
+            raise FileNotFoundError(f'Model not found: {self.model_path}')
+        if not self.artifacts_path.exists():
+            raise FileNotFoundError(f'Artifacts not found: {self.artifacts_path}')
+
+        # load model and artifacts
+        self.model = tf.keras.models.load_model(str(self.model_path))
+        self.artifacts = joblib.load(str(self.artifacts_path))
+        return self
+
+    def preprocess_file(self, filepath: str, n_samples: int = None):
+        """Load up to n_samples from a raw NSL-KDD file and apply the same
+        preprocessing used during training (one-hot, reorder features, scale
+        numeric columns using the saved scaler).
+        Returns: (X, original_index, features_df, y)
+        where y is binary labels (0=normal, 1=attack), or None if outcome not available
+        """
+        df = pd.read_csv(filepath, header=None)
+        # drop trailing difficulty column if present
+        if df.shape[1] > len(NSL_KDD_COLUMNS):
+            df = df.iloc[:, :len(NSL_KDD_COLUMNS)]
+        df.columns = NSL_KDD_COLUMNS
+
+        # Extract true labels before preprocessing
+        y = None
+        if TARGET_COLUMN in df.columns:
+            y = (df[TARGET_COLUMN] != 'normal').astype(int).values
+            if n_samples is not None:
+                y = y[:n_samples]
+
+        # numeric conversion + fill
+        for col in ['duration', 'wrong_fragment']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.fillna(0)
+
+        # one-hot encode categorical columns
+        df = pd.get_dummies(df, columns=CATEGORICAL_COLUMNS, drop_first=False)
+
+        features = df.drop(DROP_COLUMNS, axis=1)
+
+        # get feature ordering the scaler expects
+        feature_columns = self.artifacts.get('feature_columns')
+        if feature_columns is None:
+            raise RuntimeError('artifacts must contain feature_columns')
+
+        features = features.reindex(columns=feature_columns, fill_value=0)
+
+        # determine numeric columns the scaler expects
+        scaler = self.artifacts.get('scaler')
+        if scaler is None:
+            raise RuntimeError('artifacts must contain scaler')
+
+        n_num = None
+        if hasattr(scaler, 'n_features_in_'):
+            n_num = int(scaler.n_features_in_)
+        elif hasattr(scaler, 'scale_'):
+            n_num = int(len(scaler.scale_))
+
+        if n_num is None:
+            if hasattr(scaler, 'feature_names_in_'):
+                num_cols = list(scaler.feature_names_in_)
+            else:
+                raise RuntimeError('Could not determine numeric columns expected by scaler')
+        else:
+            num_cols = feature_columns[:n_num]
+
+        # apply scaler only to numeric columns
+        num_df = features.loc[:, num_cols].astype(float).copy()
+        num_scaled = scaler.transform(num_df)
+        features.loc[:, num_cols] = num_scaled
+
+        X = features.values.astype(float)
+
+        if n_samples is not None:
+            X = X[:n_samples]
+            indices = features.index[:n_samples]
+        else:
+            indices = features.index
+
+        return X, indices, features, y
+
+    def predict(self, X):
+        if self.model is None:
+            raise RuntimeError('Model not loaded; call load() first')
+        probs = self.model.predict(X)
+        preds = (probs > 0.5).astype(int).flatten()
+        return probs, preds
 
 
 def main(args):
@@ -344,7 +531,82 @@ def main(args):
     print("\n" + "="*60)
     print("Model Architecture")
     print("="*60)
-    model = build_model(X_train.shape[1])
+
+    # Decide output directory early so callbacks can write there
+    out_dir = Path(args.output_dir)
+    if getattr(args, 'increment', False):
+        out_dir = next_run_dir(args.base_output_dir)
+
+    model = None
+    # If user provided a pre-trained model path, try to load it. This supports
+    # complete Keras models saved with `model.save(...)` (.keras/.h5 or SavedModel
+    # directories) as well as raw weight files that can be loaded via
+    # `model.load_weights(...)` after building the architecture.
+    if getattr(args, 'load_model', None):
+        load_path = Path(args.load_model)
+        if not load_path.exists():
+            raise FileNotFoundError(f"Specified load_model path not found: {load_path}")
+
+        # Attempt to load a full model first
+        try:
+            print(f"  Loading full Keras model from: {load_path}")
+            loaded = tf.keras.models.load_model(str(load_path))
+            model = loaded
+            print("  ✓ Loaded full model from provided path")
+        except Exception as e:
+            print(f"  Could not load full model ({e}). Will try to build architecture and load weights.")
+            # Build architecture and try to load weights (use provided hyperparams)
+            model = build_model(
+                X_train.shape[1],
+                dropout_rate=args.dropout,
+                l1=args.l1,
+                l2=args.l2
+            )
+            try:
+                model.load_weights(str(load_path))
+                print("  ✓ Weights loaded into built model")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load weights from {load_path}: {e2}")
+    else:
+        model = build_model(
+            X_train.shape[1],
+            dropout_rate=args.dropout,
+            l1=args.l1,
+            l2=args.l2
+        )
+
+    # Create optimizer per CLI args (allows changing LR / clipping)
+    opt = None
+    if args.optimizer.lower() == 'adam':
+        opt = tf.keras.optimizers.Adam(learning_rate=args.learning_rate, clipnorm=(args.clipnorm if args.clipnorm>0 else None))
+    elif args.optimizer.lower() == 'sgd':
+        opt = tf.keras.optimizers.SGD(learning_rate=args.learning_rate, momentum=0.9, clipnorm=(args.clipnorm if args.clipnorm>0 else None))
+    else:
+        print(f"Unknown optimizer {args.optimizer}, defaulting to Adam")
+        opt = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+
+    # Re-compile model with chosen optimizer
+    model.compile(
+        optimizer=opt,
+        loss='binary_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.Precision(name='precision'), tf.keras.metrics.Recall(name='recall')]
+    )
+
+    # Prepare callbacks
+    callbacks = []
+    # ModelCheckpoint: save best weights
+    try:
+        chk_path = out_dir / 'best_weights.h5'
+        callbacks.append(tf.keras.callbacks.ModelCheckpoint(str(chk_path), save_best_only=True, save_weights_only=True, monitor='val_loss'))
+    except Exception:
+        pass
+
+    if args.reduce_lr:
+        callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=args.reduce_factor, patience=args.patience, min_lr=args.min_lr, verbose=1))
+
+    if args.early_stop:
+        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=args.es_patience, restore_best_weights=True, verbose=1))
+
     print(f"  Total parameters: {model.count_params():,}")
 
     print("\n" + "="*60)
@@ -353,7 +615,8 @@ def main(args):
     history = train_model(
         model, X_train, y_train, X_test, y_test,
         epochs=args.epochs,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        callbacks=callbacks
     )
 
     print("\n" + "="*60)
@@ -361,16 +624,26 @@ def main(args):
     print("="*60)
     metrics_dict, y_pred, cm = evaluate_model(model, X_test, y_test)
 
-    save_model_and_results(model, history, metrics_dict, args.output_dir)
+    # Save model and artifacts (include scaler + feature ordering for reproducible preprocessing)
+    # feature columns are the columns after preprocessing and after dropping the target
+    feature_columns = df_processed.drop(DROP_COLUMNS, axis=1).columns
+
+    # Choose output directory: if incremental mode is enabled, create a new
+    # incremented folder under args.base_output_dir, otherwise use args.output_dir
+    out_dir = Path(args.output_dir)
+    if getattr(args, 'increment', False):
+        out_dir = next_run_dir(args.base_output_dir)
+
+    save_model_and_results(model, history, metrics_dict, str(out_dir), scaler=scaler, feature_columns=feature_columns)
 
     print("\nGenerating visualizations...")
     plot_training_history(
-        history, 
-        save_path=Path(args.output_dir) / 'training_curves.png'
+        history,
+        save_path=out_dir / 'training_curves.png'
     )
     plot_confusion_matrix(
-        cm, 
-        save_path=Path(args.output_dir) / 'confusion_matrix.png'
+        cm,
+        save_path=out_dir / 'confusion_matrix.png'
     )
 
 
@@ -386,12 +659,54 @@ if __name__ == "__main__":
         required=True,
         help='Path to training data file (e.g., KDDTrain+.txt)'
     )
+
+    parser.add_argument(
+        '--load_model',
+        type=str,
+        default=None,
+        help='Optional path to a pre-trained Keras model (.keras/.h5 or SavedModel dir) or weights file to load before training/evaluation'
+    )
     
     parser.add_argument(
         '--output_dir', 
         type=str, 
         default='output',
         help='Directory to save model and results (default: output)'
+    )
+
+    parser.add_argument(
+        '--base_output_dir',
+        type=str,
+        default='results_nn_run',
+        help='Base name for incrementing results directories (default: results_nn_run)'
+    )
+
+    parser.add_argument(
+        '--increment',
+        action='store_true',
+        default=True,
+        help='If set (default), create an auto-incremented results folder for this run'
+    )
+
+    parser.add_argument(
+        '--dropout',
+        type=float,
+        default=0.3,
+        help='Dropout rate to use in the model (default: 0.3)'
+    )
+
+    parser.add_argument(
+        '--l1',
+        type=float,
+        default=1e-5,
+        help='L1 regularization factor (default: 1e-5)'
+    )
+
+    parser.add_argument(
+        '--l2',
+        type=float,
+        default=1e-4,
+        help='L2 regularization factor (default: 1e-4)'
     )
     
     parser.add_argument(
@@ -406,6 +721,69 @@ if __name__ == "__main__":
         type=int, 
         default=256,
         help='Training batch size (default: 256)'
+    )
+
+    parser.add_argument(
+        '--learning_rate',
+        type=float,
+        default=1e-3,
+        help='Learning rate for optimizer (default: 1e-3)'
+    )
+
+    parser.add_argument(
+        '--optimizer',
+        type=str,
+        default='adam',
+        help='Optimizer to use: adam|sgd (default: adam)'
+    )
+
+    parser.add_argument(
+        '--clipnorm',
+        type=float,
+        default=0.0,
+        help='Gradient clipping norm (0 = disabled)'
+    )
+
+    parser.add_argument(
+        '--reduce_lr',
+        action='store_true',
+        default=True,
+        help='Enable ReduceLROnPlateau callback (default: True)'
+    )
+
+    parser.add_argument(
+        '--reduce_factor',
+        type=float,
+        default=0.5,
+        help='Factor by which the LR will be reduced on plateau (default: 0.5)'
+    )
+
+    parser.add_argument(
+        '--patience',
+        type=int,
+        default=3,
+        help='Number of epochs with no improvement after which LR is reduced (default: 3)'
+    )
+
+    parser.add_argument(
+        '--min_lr',
+        type=float,
+        default=1e-7,
+        help='Minimum learning rate for ReduceLROnPlateau (default: 1e-7)'
+    )
+
+    parser.add_argument(
+        '--early_stop',
+        action='store_true',
+        default=True,
+        help='Enable EarlyStopping (default: True)'
+    )
+
+    parser.add_argument(
+        '--es_patience',
+        type=int,
+        default=8,
+        help='EarlyStopping patience in epochs (default: 8)'
     )
     
     parser.add_argument(
