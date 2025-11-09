@@ -205,6 +205,134 @@ def preprocess_data(df, scaler=None, feature_columns=None, image_size=12):
     return X_images, y, scaler, feature_columns
 
 
+def preprocess_data_standard(df, scaler=None, feature_columns=None, binary=True):
+    """
+    Preprocess NSL-KDD data with Standard (Z-score) normalization.
+    
+    For models that benefit from zero-centered, unit-variance features.
+    Better for deep neural networks with gradient-based optimization.
+    
+    Args:
+        df: Raw NSL-KDD DataFrame
+        scaler: Fitted StandardScaler (None for training data)
+        feature_columns: Expected feature columns (None for training data)
+        binary: Binary (True) or multi-class (False) classification
+    
+    Returns:
+        X: Preprocessed features (samples, features)
+        y: Labels (samples,)
+        scaler: Fitted StandardScaler
+        feature_columns: List of feature column names
+    """
+    df = df.copy()
+    
+    # Step 1: Handle missing values
+    for col in ['duration', 'wrong_fragment']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.fillna(0)
+    
+    # Step 2: Create labels
+    if binary:
+        df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
+        y = df[TARGET_COLUMN].values
+    else:
+        # Multi-class: map to 5 classes (Normal, Probe, DoS, U2R, R2L)
+        label_map = {
+            'normal': 0,
+            'probe': 1, 'portsweep': 1, 'ipsweep': 1, 'nmap': 1, 'satan': 1,
+            'dos': 2, 'back': 2, 'land': 2, 'neptune': 2, 'pod': 2, 'smurf': 2, 'teardrop': 2,
+            'u2r': 3, 'buffer_overflow': 3, 'loadmodule': 3, 'perl': 3, 'rootkit': 3,
+            'r2l': 4, 'ftp_write': 4, 'guess_passwd': 4, 'imap': 4, 'multihop': 4,
+            'phf': 4, 'spy': 4, 'warezclient': 4, 'warezmaster': 4
+        }
+        y = df[TARGET_COLUMN].map(label_map).fillna(0).astype(int).values
+    
+    # Step 3: One-hot encode categorical features
+    df = pd.get_dummies(df, columns=CATEGORICAL_COLUMNS, drop_first=False)
+    
+    # Align columns with training set (for test data)
+    if feature_columns is not None:
+        df = df.reindex(columns=list(feature_columns) + DROP_COLUMNS, fill_value=0)
+    else:
+        feature_columns = df.drop(DROP_COLUMNS, axis=1).columns.tolist()
+    
+    # Extract features
+    X = df.drop(DROP_COLUMNS, axis=1).values.astype(np.float32)
+    
+    # Step 4: Standard scale (Z-score normalization: mean=0, std=1)
+    if scaler is None:
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+    else:
+        X = scaler.transform(X)
+    
+    return X, y, scaler, feature_columns
+
+
+def preprocess_data_minmax(df, scaler=None, feature_columns=None, binary=True):
+    """
+    Preprocess NSL-KDD data with MinMax normalization (no image reshaping).
+    
+    For SAAE-DNN and similar models that work with flat feature vectors.
+    
+    Args:
+        df: Raw NSL-KDD DataFrame
+        scaler: Fitted MinMaxScaler (None for training data)
+        feature_columns: Expected feature columns (None for training data)
+        binary: Binary (True) or multi-class (False) classification
+    
+    Returns:
+        X: Preprocessed features (samples, features)
+        y: Labels (samples,)
+        scaler: Fitted MinMaxScaler
+        feature_columns: List of feature column names
+    """
+    df = df.copy()
+    
+    # Step 1: Handle missing values
+    for col in ['duration', 'wrong_fragment']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.fillna(0)
+    
+    # Step 2: Create labels
+    if binary:
+        df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
+        y = df[TARGET_COLUMN].values
+    else:
+        # Multi-class: map to 5 classes (Normal, Probe, DoS, U2R, R2L)
+        label_map = {
+            'normal': 0,
+            'probe': 1, 'portsweep': 1, 'ipsweep': 1, 'nmap': 1, 'satan': 1,
+            'dos': 2, 'back': 2, 'land': 2, 'neptune': 2, 'pod': 2, 'smurf': 2, 'teardrop': 2,
+            'u2r': 3, 'buffer_overflow': 3, 'loadmodule': 3, 'perl': 3, 'rootkit': 3,
+            'r2l': 4, 'ftp_write': 4, 'guess_passwd': 4, 'imap': 4, 'multihop': 4,
+            'phf': 4, 'spy': 4, 'warezclient': 4, 'warezmaster': 4
+        }
+        y = df[TARGET_COLUMN].map(label_map).fillna(0).astype(int).values
+    
+    # Step 3: One-hot encode categorical features
+    df = pd.get_dummies(df, columns=CATEGORICAL_COLUMNS, drop_first=False)
+    
+    # Align columns with training set (for test data)
+    if feature_columns is not None:
+        df = df.reindex(columns=list(feature_columns) + DROP_COLUMNS, fill_value=0)
+    else:
+        feature_columns = df.drop(DROP_COLUMNS, axis=1).columns.tolist()
+    
+    # Extract features
+    X = df.drop(DROP_COLUMNS, axis=1).values.astype(np.float32)
+    
+    # Step 4: MinMax normalize [0, 1]
+    if scaler is None:
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        X = scaler.fit_transform(X)
+    else:
+        X = scaler.transform(X)
+    
+    return X, y, scaler, feature_columns
+
+
 def prepare_datasets(X_train_full, y_train_full, val_split=0.1, random_state=42):
     """
     Split training data into train/validation sets.
