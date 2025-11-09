@@ -1,20 +1,19 @@
 """
-Data Preprocessing for CNN Channel Attention IDS
-Following the exact methodology from:
-"CNN Channel Attention Intrusion Detection System Using NSL-KDD Dataset"
-Alrayes et al., 2024
+Unified Data Preprocessing for IDS Models
 
-Key changes from standard preprocessing:
-1. MinMaxScaler [0, 1] instead of RobustScaler
-2. Padding to 144 features (12×12) or 784 features (28×28)
-3. Reshaping to 2D images for CNN input
-4. Separate test set (no train/test split from training data)
+Supports multiple preprocessing strategies:
+1. Standard (StandardScaler) - For dense neural networks
+2. MinMax (MinMaxScaler) - For SAAE-DNN and similar models
+3. CNN Image preprocessing - For CNN-based models with image reshaping
+4. Statistical filtering - For SAAE-DNN paper methodology (>80% zero removal)
+
+All approaches share the same NSL-KDD loading and encoding logic.
 """
 
 import numpy as np
 import pandas as pd
 import joblib
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 
@@ -38,6 +37,65 @@ NSL_KDD_COLUMNS = [
 CATEGORICAL_COLUMNS = ['protocol_type', 'service', 'flag']
 TARGET_COLUMN = 'outcome'
 DROP_COLUMNS = ['outcome', 'level']
+
+
+def calculate_zero_percentage(data, columns):
+    """
+    Calculate percentage of zero values for each feature.
+    Used for statistical filtering (SAAE-DNN paper Section 4.1.3)
+    
+    Args:
+        data: DataFrame or numpy array
+        columns: Column names
+    
+    Returns:
+        Dictionary of {column: zero_percentage}
+    """
+    zero_pcts = {}
+    for col in columns:
+        if isinstance(data, pd.DataFrame):
+            zero_count = (data[col] == 0).sum()
+            total = len(data[col])
+        else:
+            col_idx = list(columns).index(col)
+            zero_count = (data[:, col_idx] == 0).sum()
+            total = data.shape[0]
+        zero_pcts[col] = (zero_count / total) * 100
+    return zero_pcts
+
+
+def apply_statistical_filter(df, numeric_columns, threshold=80.0):
+    """
+    Apply statistical filtering: remove features with >threshold% zeros.
+    From SAAE-DNN paper Section 4.1.3: "removes 20 features with >80% zero values"
+    
+    Args:
+        df: DataFrame with numeric features
+        numeric_columns: List of numeric column names
+        threshold: Zero percentage threshold (default: 80.0)
+    
+    Returns:
+        DataFrame with filtered features
+        List of kept column names
+    """
+    print(f"\n  Statistical Filtering (SAAE-DNN methodology):")
+    print(f"  Removing features with >{threshold}% zero values...")
+    
+    numeric_df = df[numeric_columns]
+    zero_pcts = calculate_zero_percentage(numeric_df, numeric_columns)
+    
+    features_to_keep = [col for col, pct in zero_pcts.items() if pct <= threshold]
+    features_removed = [col for col, pct in zero_pcts.items() if pct > threshold]
+    
+    print(f"  Features before filtering: {len(numeric_columns)}")
+    print(f"  Features removed: {len(features_removed)}")
+    print(f"  Features kept: {len(features_to_keep)}")
+    
+    if features_removed:
+        print(f"  Removed: {', '.join(features_removed[:5])}" + 
+              (f"... and {len(features_removed)-5} more" if len(features_removed) > 5 else ""))
+    
+    return df[features_to_keep], features_to_keep
 
 
 def load_data(filepath):
@@ -203,6 +261,98 @@ def preprocess_data(df, scaler=None, feature_columns=None, image_size=12):
     X_images = reshape_to_images(X_normalized, image_size)
     
     return X_images, y, scaler, feature_columns
+
+
+def preprocess_nsl_kdd(df, scaler=None, feature_columns=None, binary=True, 
+                        use_statistical_filter=False, image_size=None):
+    """
+    Unified NSL-KDD preprocessing function.
+    
+    Args:
+        df: Raw NSL-KDD DataFrame
+        scaler: Fitted scaler (StandardScaler or MinMaxScaler, None for training)
+        feature_columns: Expected feature columns (None for training data)
+        binary: Binary (True) or multi-class (False) classification
+        use_statistical_filter: Apply >80% zero removal (SAAE-DNN methodology)
+        image_size: If provided, reshape to images (for CNN models)
+    
+    Returns:
+        X: Preprocessed features (samples, features) or images (samples, H, W, 1)
+        y: Labels (samples,)
+        scaler: Fitted scaler
+        feature_columns: List of feature column names
+    """
+    df = df.copy()
+    
+    # Step 1: Handle missing values
+    for col in ['duration', 'wrong_fragment']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.fillna(0)
+    
+    # Step 2: Create labels
+    if binary:
+        df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
+        y = df[TARGET_COLUMN].values
+    else:
+        # Multi-class: map to 5 classes (Normal, Probe, DoS, U2R, R2L)
+        label_map = {
+            'normal': 0,
+            'probe': 1, 'portsweep': 1, 'ipsweep': 1, 'nmap': 1, 'satan': 1,
+            'dos': 2, 'back': 2, 'land': 2, 'neptune': 2, 'pod': 2, 'smurf': 2, 'teardrop': 2,
+            'u2r': 3, 'buffer_overflow': 3, 'loadmodule': 3, 'perl': 3, 'rootkit': 3,
+            'r2l': 4, 'ftp_write': 4, 'guess_passwd': 4, 'imap': 4, 'multihop': 4,
+            'phf': 4, 'spy': 4, 'warezclient': 4, 'warezmaster': 4
+        }
+        y = df[TARGET_COLUMN].map(label_map).fillna(0).astype(int).values
+    
+    # Step 3: One-hot encode categorical features
+    df_features = df.drop(DROP_COLUMNS, axis=1)
+    
+    # Get numeric columns before one-hot encoding
+    numeric_cols = df_features.select_dtypes(include=[np.number]).columns.tolist()
+    
+    # Apply statistical filter if requested (before one-hot encoding)
+    if use_statistical_filter and scaler is None:  # Only for training
+        numeric_df_filtered, numeric_cols_kept = apply_statistical_filter(
+            df_features, numeric_cols, threshold=80.0
+        )
+        # Replace numeric columns with filtered ones
+        df_features = pd.concat([
+            numeric_df_filtered,
+            df_features[CATEGORICAL_COLUMNS]
+        ], axis=1)
+    
+    # One-hot encode categorical features
+    df_encoded = pd.get_dummies(df_features, columns=CATEGORICAL_COLUMNS, drop_first=False)
+    
+    # Align columns with training set (for test data)
+    if feature_columns is not None:
+        df_encoded = df_encoded.reindex(columns=feature_columns, fill_value=0)
+    else:
+        feature_columns = df_encoded.columns.tolist()
+    
+    # Extract features
+    X = df_encoded.values.astype(np.float32)
+    
+    # Step 4: Scale features
+    if scaler is None:
+        if image_size is not None:
+            # For CNN models: use MinMaxScaler
+            scaler = MinMaxScaler(feature_range=(0, 1))
+        else:
+            # For dense models: use StandardScaler
+            scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+    else:
+        X = scaler.transform(X)
+    
+    # Step 5: Reshape to images if requested (for CNN models)
+    if image_size is not None:
+        target_features = image_size * image_size
+        X = pad_features(X, target_features)
+        X = reshape_to_images(X, image_size)
+    
+    return X, y, scaler, feature_columns
 
 
 def preprocess_data_standard(df, scaler=None, feature_columns=None, binary=True):

@@ -1,11 +1,104 @@
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import (
+    classification_report, confusion_matrix, ConfusionMatrixDisplay,
+    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+)
 from pathlib import Path
 
 
-def evaluate_model(model, X_test, y_test, verbose=1):
+def evaluate_model(model, X_test, y_test, num_classes=2, binary=True, verbose=1):
+    """
+    Comprehensive model evaluation with multiple metrics.
+    
+    Args:
+        model: Trained Keras model
+        X_test: Test features
+        y_test: Test labels
+        num_classes: Number of classes (2 for binary)
+        binary: Whether it's binary classification
+        verbose: Verbosity level for model.evaluate()
+    
+    Returns:
+        dict: Dictionary containing all metrics
+    """
+    print("\n" + "="*80)
+    print("MODEL EVALUATION")
+    print("="*80)
+    
+    # Get predictions
+    y_pred_probs = model.predict(X_test, verbose=0)
+    
+    if binary:
+        y_pred = (y_pred_probs > 0.5).astype(int).flatten()
+        y_true = y_test.flatten() if len(y_test.shape) > 1 else y_test
+    else:
+        y_pred = np.argmax(y_pred_probs, axis=1)
+        y_true = y_test
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='binary' if binary else 'weighted', zero_division=0)
+    recall = recall_score(y_true, y_pred, average='binary' if binary else 'weighted', zero_division=0)
+    f1 = f1_score(y_true, y_pred, average='binary' if binary else 'weighted', zero_division=0)
+    
+    # Try to get AUC if applicable
+    try:
+        if binary:
+            auc = roc_auc_score(y_true, y_pred_probs)
+        else:
+            auc = roc_auc_score(y_true, y_pred_probs, multi_class='ovr', average='weighted')
+    except:
+        auc = None
+    
+    # Get confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Get loss from model if available
+    try:
+        eval_results = model.evaluate(X_test, y_test, verbose=verbose)
+        loss = eval_results[0] if isinstance(eval_results, list) else eval_results
+    except:
+        loss = None
+    
+    # Compile metrics dictionary
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'confusion_matrix': cm.tolist()
+    }
+    
+    if auc is not None:
+        metrics['auc'] = float(auc)
+    if loss is not None:
+        metrics['loss'] = float(loss)
+    
+    # Print metrics
+    print("\n" + "="*80)
+    print("MODEL PERFORMANCE")
+    print("="*80)
+    print(f"  Accuracy:  {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print(f"  Precision: {precision:.4f} ({precision*100:.2f}%)")
+    print(f"  Recall:    {recall:.4f} ({recall*100:.2f}%)")
+    print(f"  F1-Score:  {f1:.4f} ({f1*100:.2f}%)")
+    if auc is not None:
+        print(f"  AUC:       {auc:.4f} ({auc*100:.2f}%)")
+    print("="*80)
+    
+    return metrics
+
+
+def evaluate_model_simple(model, X_test, y_test, verbose=1):
+    """
+    Simple evaluation using model's built-in evaluate method.
+    Legacy function for backward compatibility.
+    
+    Returns:
+        tuple: (metrics_dict, y_pred)
+    """
     print("\n" + "="*60)
     print("Evaluation")
     print("="*60)
@@ -46,14 +139,47 @@ def evaluate_model(model, X_test, y_test, verbose=1):
     return metrics, y_pred
 
 
-def print_classification_report(y_true, y_pred):
-    target_names = ['Normal', 'Attack']
+def print_classification_report(y_true, y_pred, target_names=None):
+    """
+    Print classification report with precision, recall, f1-score.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        target_names: Class names (default: ['Normal', 'Attack'])
+    """
+    if target_names is None:
+        target_names = ['Normal', 'Attack']
+    
+    print("\n" + "="*80)
+    print("CLASSIFICATION REPORT")
+    print("="*80)
     print(classification_report(y_true, y_pred, target_names=target_names))
+    print("="*80)
 
 
-def plot_confusion_matrix(y_true, y_pred, output_path=None):
-    cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+def plot_confusion_matrix(cm_or_y_true, y_pred=None, output_path=None, labels=None):
+    """
+    Plot confusion matrix.
+    
+    Args:
+        cm_or_y_true: Either confusion matrix (2D array) or y_true labels
+        y_pred: Predicted labels (required if cm_or_y_true is y_true)
+        output_path: Path to save plot
+        labels: Display labels (default: ['Normal', 'Attack'])
+    """
+    if labels is None:
+        labels = ['Normal', 'Attack']
+    
+    # Handle both confusion matrix and y_true/y_pred inputs
+    if y_pred is not None:
+        # cm_or_y_true is actually y_true
+        cm = confusion_matrix(cm_or_y_true, y_pred)
+    else:
+        # cm_or_y_true is the confusion matrix
+        cm = np.array(cm_or_y_true) if not isinstance(cm_or_y_true, np.ndarray) else cm_or_y_true
+    
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
     
     fig, ax = plt.subplots(figsize=(8, 6))
     disp.plot(ax=ax, cmap='Blues', values_format='d')

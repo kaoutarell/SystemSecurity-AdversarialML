@@ -2,6 +2,11 @@
 """
 CNN Channel Attention IDS Training Script
 
+Improvements from SAAE-DNN:
+- Statistical filtering (>80% zero removal) for better feature quality
+- Comprehensive evaluation metrics
+- Better progress reporting and visualization
+
 Modernized approach combining:
 - CNN spatial feature extraction
 - ECA (Efficient Channel Attention) mechanism
@@ -15,16 +20,161 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import argparse
 import json
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from pathlib import Path
 from datetime import datetime
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
 # Import existing data loading utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dataset import process_train_test_files, load_data
 from evaluate import plot_confusion_matrix, plot_training_curves
+
+
+# NSL-KDD column names
+NSL_KDD_COLUMNS = [
+    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes',
+    'land', 'wrong_fragment', 'urgent', 'hot', 'num_failed_logins', 'logged_in',
+    'num_compromised', 'root_shell', 'su_attempted', 'num_root', 'num_file_creations',
+    'num_shells', 'num_access_files', 'num_outbound_cmds', 'is_host_login',
+    'is_guest_login', 'count', 'srv_count', 'serror_rate', 'srv_serror_rate',
+    'rerror_rate', 'srv_rerror_rate', 'same_srv_rate', 'diff_srv_rate',
+    'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count',
+    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate', 'dst_host_same_src_port_rate',
+    'dst_host_srv_diff_host_rate', 'dst_host_serror_rate', 'dst_host_srv_serror_rate',
+    'dst_host_rerror_rate', 'dst_host_srv_rerror_rate', 'outcome', 'level'
+]
+
+CATEGORICAL_COLUMNS = ['protocol_type', 'service', 'flag']
+TARGET_COLUMN = 'outcome'
+DROP_COLUMNS = ['outcome', 'level']
+
+
+def load_data(filepath):
+    """Load NSL-KDD data"""
+    print(f"Loading data from {filepath}...")
+    df = pd.read_csv(filepath, header=None)
+    if df.shape[1] > len(NSL_KDD_COLUMNS):
+        df = df.iloc[:, :len(NSL_KDD_COLUMNS)]
+    df.columns = NSL_KDD_COLUMNS
+    print(f"  Loaded: {len(df):,} samples, {df.shape[1]} features")
+    
+    # Show class distribution
+    print(f"  Class distribution:")
+    unique, counts = np.unique(df[TARGET_COLUMN], return_counts=True)
+    for label, count in zip(unique, counts):
+        label_name = 'Normal' if label == 'normal' else 'Attack'
+        print(f"    {label_name}: {count:,} ({count/len(df)*100:.1f}%)")
+    
+    return df
+
+
+def calculate_zero_percentage(df, numeric_columns):
+    """Calculate percentage of zeros for each numeric column."""
+    zero_percentages = {}
+    for col in numeric_columns:
+        zero_count = (df[col] == 0).sum()
+        zero_pct = (zero_count / len(df)) * 100
+        zero_percentages[col] = zero_pct
+    return zero_percentages
+
+
+def preprocess_nsl_kdd(df, scaler=None, feature_columns=None, features_to_keep=None, image_size=12):
+    """
+    Preprocess NSL-KDD data with statistical filtering + reshape to 2D images.
+    
+    Statistical Filtering:
+    - Remove features with >80% zero values
+    - Results in ~102 features (18 numeric + 84 one-hot)
+    - Then reshape to (image_size, image_size, 1) for CNN
+    """
+    df = df.copy()
+    
+    # Step 1: Handle missing values
+    print("  Step 1: Handling missing values...")
+    for col in ['duration', 'wrong_fragment']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.fillna(0)
+    
+    # Step 2: Create binary labels (0=normal, 1=attack)
+    print("  Step 2: Creating binary labels (0=normal, 1=attack)...")
+    df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
+    y = df[TARGET_COLUMN].values
+    
+    # Step 3: One-hot encode categorical features
+    print(f"  Step 3: One-hot encoding {CATEGORICAL_COLUMNS}...")
+    df_encoded = pd.get_dummies(df[CATEGORICAL_COLUMNS], columns=CATEGORICAL_COLUMNS)
+    print(f"    One-hot features: {len(df_encoded.columns)} (from 3 categorical)")
+    
+    # Separate numeric features
+    numeric_features = df.drop(columns=CATEGORICAL_COLUMNS + DROP_COLUMNS)
+    
+    # Step 4: Statistical filtering (ONLY for training data)
+    if features_to_keep is None:
+        print(f"  Step 4: Statistical Filtering (>80% zero removal)...")
+        zero_pcts = calculate_zero_percentage(numeric_features, numeric_features.columns)
+        features_to_keep = [col for col, pct in zero_pcts.items() if pct <= 80.0]
+        removed_features = [col for col, pct in zero_pcts.items() if pct > 80.0]
+        
+        print(f"    Original numeric features: {len(numeric_features.columns)}")
+        print(f"    Features with >80% zeros: {len(removed_features)}")
+        print(f"    Remaining numeric features: {len(features_to_keep)}")
+        
+        if removed_features and len(removed_features) <= 25:
+            print(f"    Removed: {removed_features}")
+    else:
+        print(f"  Step 4: Using pre-defined feature set (test data)...")
+        print(f"    Using {len(features_to_keep)} filtered numeric features")
+    
+    # Keep only selected numeric features
+    numeric_features_filtered = numeric_features[features_to_keep]
+    
+    # Combine: numeric (filtered) + one-hot encoded
+    X = pd.concat([numeric_features_filtered, df_encoded], axis=1)
+    
+    # Align columns for test data
+    if feature_columns is None:
+        feature_columns = X.columns.tolist()
+        print(f"    Total features: {len(feature_columns)}")
+        print(f"      = {len(features_to_keep)} numeric + {len(df_encoded.columns)} one-hot")
+    else:
+        for col in feature_columns:
+            if col not in X.columns:
+                X[col] = 0
+        X = X[feature_columns]
+    
+    X = X.values.astype(np.float32)
+    
+    # Step 5: StandardScaler normalization
+    print(f"  Step 5: StandardScaler normalization...")
+    if scaler is None:
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+    else:
+        X = scaler.transform(X)
+    
+    # Step 6: Reshape to 2D images for CNN
+    print(f"  Step 6: Reshaping to ({image_size}, {image_size}, 1) images for CNN...")
+    target_features = image_size * image_size
+    
+    if X.shape[1] < target_features:
+        # Pad with zeros
+        padding = target_features - X.shape[1]
+        X = np.pad(X, ((0, 0), (0, padding)), mode='constant', constant_values=0)
+        print(f"    Padded {X.shape[1] - target_features} features to reach {target_features}")
+    elif X.shape[1] > target_features:
+        # Truncate
+        X = X[:, :target_features]
+        print(f"    Truncated to {target_features} features")
+    
+    # Reshape to (batch, height, width, channels)
+    X_images = X.reshape(-1, image_size, image_size, 1)
+    print(f"    Final shape: {X_images.shape}")
+    
+    return X_images, y, scaler, feature_columns, features_to_keep
 
 
 class ECABlock(tf.keras.layers.Layer):
@@ -182,7 +332,7 @@ def train_model(model, X_train, y_train, X_test, y_test,
     run_dir.mkdir(parents=True, exist_ok=True)
     
     print("\n" + "="*80)
-    print("CNN + ECA Attention IDS - Training Configuration")
+    print("CNN + ECA Attention IDS - Training")
     print("="*80)
     print(f"  Model: {model.name}")
     print(f"  Total parameters: {model.count_params():,}")
@@ -236,69 +386,64 @@ def train_model(model, X_train, y_train, X_test, y_test,
     return history, run_dir
 
 
-def evaluate_model(model, X_test, y_test, run_dir):
+def evaluate_model(model, X_test, y_test, run_dir, dataset_name='Test'):
     """Evaluate and save results."""
-    print("\n" + "="*80)
-    print("Evaluation")
+    print(f"\n{'='*80}")
+    print(f"Evaluation on {dataset_name}")
     print("="*80)
-    print("\nEvaluating model...")
     
-    # Get metrics
-    results = model.evaluate(X_test, y_test, verbose=0)
-    metric_names = model.metrics_names
-    
-    metrics = {}
-    for name, value in zip(metric_names, results):
-        metrics[name] = float(value)
-    
-    # Get predictions for calculating additional metrics
+    # Get predictions
     y_pred_probs = model.predict(X_test, verbose=0)
     y_pred = (y_pred_probs > 0.5).astype(int).flatten()
+    y_true = y_test.flatten() if len(y_test.shape) > 1 else y_test
     
-    # Calculate metrics from sklearn if not in model metrics
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+    # Calculate metrics
+    from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
+                                 f1_score, classification_report, confusion_matrix, 
+                                 roc_auc_score)
     
-    if 'accuracy' not in metrics:
-        metrics['accuracy'] = float(accuracy_score(y_test, y_pred))
-    if 'precision' not in metrics:
-        metrics['precision'] = float(precision_score(y_test, y_pred))
-    if 'recall' not in metrics:
-        metrics['recall'] = float(recall_score(y_test, y_pred))
-    if 'auc' not in metrics:
-        metrics['auc'] = float(roc_auc_score(y_test, y_pred_probs))
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='binary')
+    recall = recall_score(y_true, y_pred, average='binary')
+    f1 = f1_score(y_true, y_pred, average='binary')
+    auc = roc_auc_score(y_true, y_pred_probs)
     
-    print("\n" + "="*80)
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'auc': float(auc)
+    }
+    
+    print(f"\n{'='*80}")
     print("MODEL PERFORMANCE")
     print("="*80)
-    print(f"  Accuracy:  {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-    print(f"  Precision: {metrics['precision']:.4f} ({metrics['precision']*100:.2f}%)")
-    print(f"  Recall:    {metrics['recall']:.4f} ({metrics['recall']*100:.2f}%)")
-    print(f"  AUC:       {metrics['auc']:.4f} ({metrics['auc']*100:.2f}%)")
-    print(f"  Loss:      {metrics['loss']:.4f}")
+    print(f"  Accuracy:  {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print(f"  Precision: {precision:.4f} ({precision*100:.2f}%)")
+    print(f"  Recall:    {recall:.4f} ({recall*100:.2f}%)")
+    print(f"  F1-Score:  {f1:.4f} ({f1*100:.2f}%)")
+    print(f"  AUC:       {auc:.4f} ({auc*100:.2f}%)")
     print("="*80)
     
     # Classification report
-    from sklearn.metrics import classification_report, confusion_matrix
+    target_names = ['Normal', 'Attack']
     
-    print("\n" + classification_report(
-        y_test, y_pred, 
-        target_names=['Normal', 'Attack'],
-        digits=2
-    ))
+    print("\n" + classification_report(y_true, y_pred, target_names=target_names, digits=4))
     
-    cm = confusion_matrix(y_test, y_pred)
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
     print("Confusion Matrix:")
     print(cm)
     print("="*80)
     
-    # Save metrics
-    with open(run_dir / 'metrics.json', 'w') as f:
-        json.dump(metrics, f, indent=2)
-    
-    # Save confusion matrix plot
-    plot_confusion_matrix(y_test, y_pred, run_dir / 'confusion_matrix.png')
-    
-    print("\n✓ Results saved to:", run_dir)
+    # Save results
+    if run_dir:
+        with open(run_dir / f'metrics_{dataset_name.lower()}.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+        
+        plot_confusion_matrix(y_true, y_pred, 
+                             run_dir / f'confusion_matrix_{dataset_name.lower()}.png')
     
     return metrics
 
@@ -310,13 +455,15 @@ def main():
     parser.add_argument('--train_path', type=str, required=True,
                        help='Path to training data file')
     parser.add_argument('--test_path', type=str, default=None,
-                       help='Path to test data file (optional)')
+                       help='Path to test data file')
     parser.add_argument('--use_separate_test', action='store_true',
-                       help='Use separate test file for validation')
+                       help='Use separate test file for evaluation')
+    parser.add_argument('--validation_split', type=float, default=0.2,
+                       help='Validation split ratio (default: 0.2)')
     
     # Model hyperparameters
-    parser.add_argument('--image_size', type=int, default=11,
-                       help='Image size for CNN (11x11=121 features, 12x12=144)')
+    parser.add_argument('--image_size', type=int, default=12,
+                       help='Image size for CNN (12x12=144 features)')
     parser.add_argument('--dropout', type=float, default=0.4,
                        help='Dropout rate')
     parser.add_argument('--l1', type=float, default=1e-5,
@@ -325,13 +472,13 @@ def main():
                        help='L2 regularization')
     
     # Training parameters
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=100,
                        help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=2048,
                        help='Batch size')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                        help='Learning rate')
-    parser.add_argument('--patience', type=int, default=10,
+    parser.add_argument('--patience', type=int, default=15,
                        help='Early stopping patience')
     parser.add_argument('--min_delta', type=float, default=0.001,
                        help='Early stopping minimum delta')
@@ -348,45 +495,61 @@ def main():
     
     # Check GPU
     gpus = tf.config.list_physical_devices('GPU')
-    print(f"✓ GPU enabled: {len(gpus)} device(s)")
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"✓ GPU enabled: {len(gpus)} device(s)")
+        except RuntimeError as e:
+            print(f"GPU configuration error: {e}")
+    
     print(f"✓ TensorFlow version: {tf.__version__}\n")
     
-    # Load data using existing utilities
-    # Use the new preprocessing pipeline
-    if args.use_separate_test and args.test_path:
-        # Complete preprocessing pipeline with train/validation split
-        X_train, X_val, X_test, y_train, y_val, y_test = process_train_test_files(
-            train_path=args.train_path,
-            test_path=args.test_path,
-            image_size=args.image_size,
-            val_split=0.15,  # 85% train, 15% validation (matches PyTorch implementation)
-            artifacts_path=Path(args.output_dir) / 'artifacts.joblib'
-        )
-        
-        # For compatibility with existing code, treat validation as test during training
-        # (we'll evaluate on the actual test set after training)
-        X_train_combined = X_train
-        X_test_for_training = X_val
-        y_train_combined = y_train
-        y_test_for_training = y_val
-    else:
-        raise ValueError("This script requires --use_separate_test and --test_path")
+    # Load and preprocess data
+    print("="*80)
+    print("Data Preparation")
+    print("="*80)
     
-    print(f"\n  Data shapes:")
-    print(f"    Training images: {X_train_combined.shape}")
-    print(f"    Validation images: {X_test_for_training.shape}")
-    print(f"    Test images: {X_test.shape}")
+    train_df = load_data(args.train_path)
+    X_train_full, y_train_full, scaler, feature_columns, features_to_keep = preprocess_nsl_kdd(
+        train_df, image_size=args.image_size
+    )
+    
+    # Split into train and validation
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_full, y_train_full,
+        test_size=args.validation_split,
+        random_state=42,
+        stratify=y_train_full
+    )
+    
+    print(f"\nTraining set: {X_train.shape}")
+    print(f"Validation set: {X_val.shape}")
+    
+    # Load test data if provided
+    if args.use_separate_test and args.test_path:
+        test_df = load_data(args.test_path)
+        X_test, y_test, _, _, _ = preprocess_nsl_kdd(
+            test_df,
+            scaler=scaler,
+            feature_columns=feature_columns,
+            features_to_keep=features_to_keep,
+            image_size=args.image_size
+        )
+        print(f"Test set: {X_test.shape}")
+    else:
+        X_test = X_val
+        y_test = y_val
+        print("Using validation set as test set")
     
     print("\n" + "="*80)
     print("Model Architecture")
     print("="*80)
     
-    # Input shape is now (12, 12, 1) or (28, 28, 1) - already 2D images
-    input_shape = X_train_combined.shape[1:]  # (height, width, channels)
-    print(f"  Input shape: {input_shape}")
+    print(f"  Input shape: {X_train.shape[1:]}")
     
     model = build_cnn_attention_model(
-        input_dim=144,  # 12x12, but model will receive 2D images
+        input_dim=X_train.shape[1] * X_train.shape[2],
         image_size=args.image_size,
         dropout=args.dropout,
         l1=args.l1,
@@ -396,11 +559,10 @@ def main():
     model = compile_model(model, learning_rate=args.learning_rate)
     
     print(f"  Total parameters: {model.count_params():,}")
-    print(f"  Output directory: {args.output_dir}\n")
     
     # Train
     history, run_dir = train_model(
-        model, X_train_combined, y_train_combined, X_test_for_training, y_test_for_training,
+        model, X_train, y_train, X_val, y_val,
         epochs=args.epochs,
         batch_size=args.batch_size,
         patience=args.patience,
@@ -408,11 +570,8 @@ def main():
         output_dir=args.output_dir
     )
     
-    # Evaluate on actual test set
-    print("\n" + "="*80)
-    print("Final Evaluation on Test Set")
-    print("="*80)
-    metrics = evaluate_model(model, X_test, y_test, run_dir)
+    # Evaluate
+    metrics = evaluate_model(model, X_test, y_test, run_dir, 'Test')
     
     # Save training curves
     plot_training_curves(history, run_dir / 'training_curves.png')
@@ -421,11 +580,21 @@ def main():
     model.save(run_dir / 'final_model.keras')
     print(f"\n✓ Model saved to: {run_dir / 'final_model.keras'}")
     
+    # Save artifacts
+    import joblib
+    artifacts = {
+        'scaler': scaler,
+        'feature_columns': feature_columns,
+        'features_to_keep': features_to_keep,
+        'image_size': args.image_size
+    }
+    joblib.dump(artifacts, run_dir / 'artifacts.joblib')
+    print(f"✓ Artifacts saved to: {run_dir / 'artifacts.joblib'}")
+    
     print("\n" + "="*80)
     print("Training Complete!")
     print("="*80)
     print(f"Results saved to: {run_dir}")
-    print(f"Final model saved to: {run_dir / 'final_model.keras'}")
     print("="*80 + "\n")
 
 

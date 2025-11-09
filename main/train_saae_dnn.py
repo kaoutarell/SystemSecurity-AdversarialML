@@ -632,27 +632,83 @@ def main():
     TARGET_COLUMN = 'outcome'
     DROP_COLUMNS = ['outcome', 'level']
     
-    def preprocess_nsl_kdd(df, scaler=None, feature_columns=None):
-        """Preprocess NSL-KDD data with StandardScaler"""
+    def calculate_zero_percentage(df, numeric_columns):
+        """
+        Calculate percentage of zeros for each numeric column.
+        Used for SAAE-DNN statistical filtering (Paper Section 4.1.3).
+        """
+        zero_percentages = {}
+        for col in numeric_columns:
+            zero_count = (df[col] == 0).sum()
+            zero_pct = (zero_count / len(df)) * 100
+            zero_percentages[col] = zero_pct
+        return zero_percentages
+    
+    def preprocess_nsl_kdd(df, scaler=None, feature_columns=None, features_to_keep=None):
+        """
+        Preprocess NSL-KDD data following SAAE-DNN paper methodology.
+        
+        Paper Section 4.1.3: Statistical Filtering
+        - Remove features with >80% zero values
+        - Results in 18 numeric + 84 one-hot = 102 features
+        """
         df = df.copy()
         
-        # Handle missing values
+        # Step 1: Handle missing values
+        print("  Step 1: Handling missing values...")
         for col in ['duration', 'wrong_fragment']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         df = df.fillna(0)
         
-        # Create binary labels (0=normal, 1=attack)
+        # Step 2: Create binary labels (0=normal, 1=attack)
+        print("  Step 2: Creating binary labels (0=normal, 1=attack)...")
         df[TARGET_COLUMN] = (df[TARGET_COLUMN] != "normal").astype(int)
         y = df[TARGET_COLUMN].values
         
-        # One-hot encode categorical features
+        # Step 3: One-hot encode categorical features
+        print(f"  Step 3: One-hot encoding {CATEGORICAL_COLUMNS}...")
         df_encoded = pd.get_dummies(df[CATEGORICAL_COLUMNS], columns=CATEGORICAL_COLUMNS)
-        X = pd.concat([df.drop(columns=CATEGORICAL_COLUMNS + DROP_COLUMNS), df_encoded], axis=1)
+        print(f"    One-hot features: {len(df_encoded.columns)} (from 3 categorical)")
+        
+        # Separate numeric features
+        numeric_features = df.drop(columns=CATEGORICAL_COLUMNS + DROP_COLUMNS)
+        
+        # Step 4: Statistical filtering (ONLY for training data)
+        if features_to_keep is None:
+            print(f"  Step 4: Statistical Filtering (SAAE-DNN Paper Section 4.1.3)...")
+            # Calculate zero percentages for numeric features
+            zero_pcts = calculate_zero_percentage(numeric_features, numeric_features.columns)
+            
+            # Keep features with <= 80% zeros
+            features_to_keep = [col for col, pct in zero_pcts.items() if pct <= 80.0]
+            
+            removed_features = [col for col, pct in zero_pcts.items() if pct > 80.0]
+            print(f"    Original numeric features: {len(numeric_features.columns)}")
+            print(f"    Features with >80% zeros: {len(removed_features)}")
+            print(f"    Remaining numeric features: {len(features_to_keep)}")
+            
+            if removed_features and len(removed_features) <= 25:
+                print(f"    Removed: {removed_features}")
+            elif removed_features:
+                print(f"    Removed (first 10): {removed_features[:10]}")
+        else:
+            print(f"  Step 4: Using pre-defined feature set (test data)...")
+            print(f"    Using {len(features_to_keep)} filtered numeric features")
+        
+        # Keep only selected numeric features
+        numeric_features_filtered = numeric_features[features_to_keep]
+        
+        # Combine: numeric (filtered) + one-hot encoded
+        X = pd.concat([numeric_features_filtered, df_encoded], axis=1)
         
         # Align columns for test data
         if feature_columns is None:
             feature_columns = X.columns.tolist()
+            print(f"    Total features: {len(feature_columns)}")
+            print(f"      = {len(features_to_keep)} numeric + {len(df_encoded.columns)} one-hot")
+            print(f"      Expected: 102 features (18 numeric + 84 one-hot)")
         else:
+            # Align with training columns
             for col in feature_columns:
                 if col not in X.columns:
                     X[col] = 0
@@ -660,18 +716,19 @@ def main():
         
         X = X.values.astype(np.float32)
         
-        # StandardScaler normalization
+        # Step 5: StandardScaler normalization
+        print(f"  Step 5: MinMaxScaler normalization [0, 1]...")
         if scaler is None:
             scaler = StandardScaler()
             X = scaler.fit_transform(X)
         else:
             X = scaler.transform(X)
         
-        return X, y, scaler, feature_columns
+        return X, y, scaler, feature_columns, features_to_keep
     
     # Load training data
     train_df = load_data(args.train_path)
-    X_train_full, y_train_full, scaler, feature_columns = preprocess_nsl_kdd(train_df)
+    X_train_full, y_train_full, scaler, feature_columns, features_to_keep = preprocess_nsl_kdd(train_df)
     
     # Split into train and validation
     X_train, X_val, y_train, y_val = train_test_split(
@@ -687,7 +744,12 @@ def main():
     # Load test data if provided
     if args.test_path:
         test_df = load_data(args.test_path)
-        X_test, y_test, _, _ = preprocess_nsl_kdd(test_df, scaler=scaler, feature_columns=feature_columns)
+        X_test, y_test, _, _, _ = preprocess_nsl_kdd(
+            test_df, 
+            scaler=scaler, 
+            feature_columns=feature_columns,
+            features_to_keep=features_to_keep
+        )
         print(f"Test set: {X_test.shape}")
     else:
         X_test = X_val
