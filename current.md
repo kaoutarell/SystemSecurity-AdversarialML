@@ -1,1 +1,0 @@
-XLA_FLAGS=--xla_gpu_cuda_data_dir=/usr/lib/nvidia-cuda-toolkit .venv/bin/python main/train_ids.py --train_path nsl-kdd/KDDTrain+.txt --test_path nsl-kdd/KDDTest+.txt --use_separate_test --epochs 200 --batch_size 1024 --dropout 0.6 --l1 2e-4 --l2 2e-3 --learning_rate 0.0003 --patience 20 --min_delta 0.00005 --use_batchnorm

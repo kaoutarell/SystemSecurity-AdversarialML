@@ -26,24 +26,13 @@ from base_model import build_model, compile_model, train_model
 from evaluate import evaluate_model, print_classification_report, plot_confusion_matrix, plot_training_curves, save_metrics, save_training_history
 from utils import get_next_run_dir, ensure_results_structure
 
-
-# NSL-KDD column names
-NSL_KDD_COLUMNS = [
-    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes',
-    'land', 'wrong_fragment', 'urgent', 'hot', 'num_failed_logins', 'logged_in',
-    'num_compromised', 'root_shell', 'su_attempted', 'num_root', 'num_file_creations',
-    'num_shells', 'num_access_files', 'num_outbound_cmds', 'is_host_login',
-    'is_guest_login', 'count', 'srv_count', 'serror_rate', 'srv_serror_rate',
-    'rerror_rate', 'srv_rerror_rate', 'same_srv_rate', 'diff_srv_rate',
-    'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count',
-    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate', 'dst_host_same_src_port_rate',
-    'dst_host_srv_diff_host_rate', 'dst_host_serror_rate', 'dst_host_srv_serror_rate',
-    'dst_host_rerror_rate', 'dst_host_srv_rerror_rate', 'outcome', 'level'
-]
-
-CATEGORICAL_COLUMNS = ['protocol_type', 'service', 'flag']
-TARGET_COLUMN = 'outcome'
-DROP_COLUMNS = ['outcome', 'level']
+# Import NSL-KDD constants from dataset module
+from dataset import (
+    NSL_KDD_COLUMNS, 
+    CATEGORICAL_COLUMNS, 
+    TARGET_COLUMN, 
+    DROP_COLUMNS
+)
 
 
 def load_data(filepath):
@@ -128,7 +117,7 @@ def preprocess_data_baseline(df, scaler=None, feature_columns=None):
     return X_scaled.astype('float32'), y.astype('float32'), scaler, feature_columns
 
 
-def prepare_datasets_baseline(X_train_full, y_train_full, val_split=0.15, random_state=42):
+def prepare_datasets_baseline(X_train_full, y_train_full, val_split=0.15, random_state=9281):
     """
     Split training data into train/validation sets with stratification.
     
@@ -189,14 +178,13 @@ def main():
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=2048, help='Batch size')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
     parser.add_argument('--min_delta', type=float, default=0.0001, help='Minimum change for early stopping')
     parser.add_argument('--clipnorm', type=float, default=0.0, help='Gradient clipping norm (0 to disable)')
     
     # Output arguments
     parser.add_argument('--output_dir', type=str, help='Output directory for results')
     parser.add_argument('--save_models_dir', type=str, default='results/models', help='Directory to save models')
-    parser.add_argument('--random_state', type=int, default=42, help='Random seed')
+    parser.add_argument('--random_state', type=int, default=9281, help='Random seed')
     
     args = parser.parse_args()
     
@@ -285,7 +273,6 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Training samples: {len(X_train):,}")
     print(f"  Validation samples: {len(X_val):,}")
-    print(f"  Early stopping patience: {args.patience} epochs")
     print("="*60 + "\n")
     
     history = train_model(
@@ -296,7 +283,6 @@ def main():
         y_test=y_val,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        patience=args.patience,
         min_delta=args.min_delta,
         verbose=1
     )

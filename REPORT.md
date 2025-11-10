@@ -25,3 +25,28 @@ fgsm
 
 ### Defense
 
+
+Using nsl kdd dataset for network traffic intrusion detection
+
+Are you familiar with this dataset
+
+Searching for state of the art model to be able to get best accuracy and I ran into a lot of misleading info online, moslty having to do with the use of train and test dataset. 
+
+So I found that either models gave 99% accurcay or around 80% accuracy depending on wihch was used
+
+In theory, should be using the test dataset for proper results, but it will be harder to properly measure the effects of attacks and defenses since the amount of false positives 
+
+if follow paper attacks etc, what expecting on notable findings and contribution
+
+Chose one of the approaches,
+
+
+
+Show pertubations fall within normal distributions, could not be detected as anomalies
+
+
+
+Adversarial training - generalizes across threat models
+Model robustness curves - useful for evaluation
+
+PGD Attack + PGD Adversarial Training

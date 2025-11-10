@@ -172,9 +172,9 @@ def compile_model(model, learning_rate=0.001, clipnorm=None):
 
 
 def train_model(model, X_train, y_train, X_test, y_test, epochs=20, batch_size=64, 
-                patience=5, min_delta=0.001, verbose=1, class_weight=None):
+                min_delta=0.001, verbose=1, class_weight=None):
     """
-    Training function with early stopping and learning rate reduction.
+    Training function with learning rate reduction.
     """
     print("\n" + "="*60)
     print("Training Configuration")
@@ -185,22 +185,14 @@ def train_model(model, X_train, y_train, X_test, y_test, epochs=20, batch_size=6
     print(f"  Batch size: {batch_size}")
     print(f"  Training samples: {len(X_train):,}")
     print(f"  Validation samples: {len(X_test):,}")
-    print(f"  Early stopping patience: {patience} epochs")
     print(f"  Class weights: {'Enabled' if class_weight else 'Disabled'}")
     print("="*60 + "\n")
     
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=patience,
-            min_delta=min_delta,
-            restore_best_weights=True,
-            verbose=1
-        ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
-            patience=max(3, patience//2),
+            patience=5,
             min_lr=1e-6,
             verbose=1
         ),

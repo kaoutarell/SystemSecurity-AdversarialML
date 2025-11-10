@@ -483,7 +483,7 @@ def preprocess_data_minmax(df, scaler=None, feature_columns=None, binary=True):
     return X, y, scaler, feature_columns
 
 
-def prepare_datasets(X_train_full, y_train_full, val_split=0.1, random_state=42):
+def prepare_datasets(X_train_full, y_train_full, val_split=0.1, random_state=9281):
     """
     Split training data into train/validation sets.
     
