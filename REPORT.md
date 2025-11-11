@@ -49,4 +49,18 @@ Show pertubations fall within normal distributions, could not be detected as ano
 Adversarial training - generalizes across threat models
 Model robustness curves - useful for evaluation
 
-PGD Attack + PGD Adversarial Training
+PGD Attack
+
+Find epsilon such that modifications stray least from normal distribution
+
+Research using white-box attacks (PGD, FGSM) is valuable because:
+
+1. **Worst-Case Analysis**: "If we defend against the strongest possible attack (white-box), we're more likely to be robust to weaker attacks (black-box)"
+
+2. **Transferability**: "Models defended against white-box attacks on themselves also become more robust to black-box attacks from other models"
+
+ Substitute Mode Training using Jacobian based dataset augmentation.
+ 
+Transfer attack
+
+PGD Adversarial Training
