@@ -54,6 +54,13 @@ All attacks maintain **deployment-viable network traffic**:
 - Force model to learn robust decision boundaries
 - Parameters: ε=0.5, α=0.008, 20-40 PGD iterations
 
+## Code - Google Colab
+> Run Experiments on Google Colab
+
+**🔗 [Open in Google Colab](https://colab.research.google.com/drive/18pOhNwcn8_JBMaP6womffT9MH4U8_UI_?usp=sharing)**
+
+(no local installation needed)
+
 ## Results Summary
 
 | Scenario | Baseline Accuracy | Robust Accuracy | Improvement |
