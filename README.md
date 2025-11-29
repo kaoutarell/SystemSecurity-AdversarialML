@@ -12,112 +12,93 @@ Intrusion Detection under Adversarial Machine Learning Attacks
 Modern Intrusion Detection Systems (IDS) increasingly rely on Machine Learning models to detect malicious network behavior.
 However, adversarial attacks can manipulate inputs in subtle ways to evade detection, even when changes are invisible to humans.
 
-📑 This project investigates how adversarial machine learning affects IDS models, specifically using the NSL-KDD cyber-security dataset.
+📑 This project investigates the adversarial robustness of neural network-based Intrusion Detection Systems (IDS) using the NSL-KDD dataset. We demonstrate that models achieving 99.67% accuracy on clean data catastrophically fail under adversarial attacks (dropping to 49.92%), and show that semantically-constrained adversarial training restores robustness to 92-95% across all attack scenarios.
 
-## Our Goals
+## Project Main Questions
 
-| Goal                             | Description                                             |
-| -------------------------------- | ------------------------------------------------------- |
-| 📦 Train a baseline IDS ML model | Build a neural network to classify network traffic      |
-| ⚔️ Attack the model (FGSM)       | Generate adversarial samples & evaluate evasion success |
-| 📉 Analyze model robustness      | Compare clean vs attacked accuracy                      |
-| 🛡️ Explore defenses              | Test adversarial training / model hardening             |
-| 📊 Present results               | Graphs, metrics, report, reproducible pipeline          |
+1. **How vulnerable are ML-based IDS to adversarial attacks?**
+   - White-box attacks (full model access)
+   - Black-box transfer attacks (surrogate models)
+   - Query-based attacks (minimal knowledge)
 
-## Expected Results
+2. **Can adversarial training defend against these attacks?**
+   - While maintaining acceptable clean performance
+   - Using semantically-valid network traffic constraints
 
-We expect to observe the following
+3. **What are the practical security implications?**
+   - Gap between reported accuracy and actual robustness
+   - Deployment recommendations for security-critical ML
 
-- High baseline accuracy (not perfect)
-- Significant performance drop under adversarial attack
-- IDS becomes vulnerable even to small perturbations
-- Defense training improves resilience, but at cost of accuracy
+## Methodology
+### Attack Framework
+| Attack Type | Attacker Knowledge | Success Rate (Baseline) |
+|-------------|-------------------|------------------------|
+| **White-box PGD** | Complete (architecture, parameters, gradients) | 50.08% |
+| **Transfer (Simple)** | Black-box (trained surrogate) | 29.20% |
+| **Transfer (Deep)** | Black-box (deep surrogate) | 31.36% |
+| **Transfer (Ensemble)** | Black-box (ensemble surrogates) | 34.34% |
+| **Query-based** | Minimal (5% seed data + 10k queries) | 41.93% |
 
-Expectations :
-| Scenario | Accuracy |
-| -------------------------- | ----------------------------- |
-| Clean test data | ~75–90% |
-| FGSM ε = 0.01 | noticeable drop |
-| FGSM ε = 0.1 | large accuracy collapse |
-| After adversarial training | higher adversarial robustness |
+### Semantic Constraints
+All attacks maintain **deployment-viable network traffic**:
+- **Count features** → Integer values only
+- **Binary flags** → {0, 1}
+- **Non-negative features** → ≥ 0 (byte counts, durations)
+- **Rate features** → [0, 1] (error rates, connection rates)
+- **Categorical features** → Valid one-hot encodings (protocol, service, flag)
 
-## Setup & Usage
+### Defense Strategy
+**Adversarial Training** (Madry et al.):
+- Generate semantically-constrained PGD adversarial examples during training
+- Mix adversarial + clean data in each batch
+- Force model to learn robust decision boundaries
+- Parameters: ε=0.5, α=0.008, 20-40 PGD iterations
 
-After cloning the repo :
+## Code - Google Colab
+> Run Experiments on Google Colab
 
-### 1. Set up the env
+**🔗 [Open in Google Colab](https://colab.research.google.com/drive/18pOhNwcn8_JBMaP6womffT9MH4U8_UI_?usp=sharing)**
 
-*Mac & Linux OSs*
+(no local installation needed)
 
-```
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+## Results Summary
 
-*Windows*
+| Scenario | Baseline Accuracy | Robust Accuracy | Improvement |
+|----------|------------------|-----------------|-------------|
+| **Clean Data** | 99.67% | 95.82% | -3.85pp |
+| **White-box PGD** | 49.92% | 92.61% | **+42.69pp** |
+| **Transfer (Simple)** | 70.80% | 94.40% | **+23.60pp** |
+| **Transfer (Deep)** | 68.64% | 95.07% | **+26.43pp** |
+| **Transfer (Ensemble)** | 65.66% | 95.07% | **+29.41pp** |
+| **Query-based** | 58.07% | 95.43% | **+37.36pp** |
 
-```
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-```
+**Attack Success Rate Reduction:** 5.2× to 9.2× across all scenarios  
 
-### 2. Datasets (download locally)
+## Experimental Findings
 
-> **⚠️ VERY IMPORTANT ⚠️** : since the datasets are HUGE, they're not pushed to the repo.
+### Finding 1: Clean Accuracy ≠ Adversarial Robustness
+> **99.67% clean accuracy → 49.92% under attack**
+>
+> Standard training provides **zero security guarantees** against adaptive adversaries.
 
-- Create a folder on root lvl of the project called : data
-- Download datasets (NSL-KDD) in /data (created above):
-  [KDD Test+ Txt](https://www.kaggle.com/datasets/hassan06/nslkdd?select=KDDTest%2B.txt)
-  [KDD Train+ Txt](https://www.kaggle.com/datasets/hassan06/nslkdd?select=KDDTrain%2B.txt)
+### Finding 2: Black-box Attacks Are Highly Effective
+> **Transfer success: 29-34% | Query-based success: 42%**
+>
+> Attackers need minimal knowledge to evade detection—dramatically lowering the attack barrier.
 
-### 3. Train the model (commands)
+### Finding 3: Adversarial Training Works
+> **Robust model: 92-95% accuracy across all attack scenarios**
+>
+> Semantically-constrained adversarial training provides **practical robustness** with only 3.85pp clean accuracy cost.
 
-```
-python train.py --train data/KDDTrain+.txt --test data/KDDTest+.txt --out_dir results --epochs 15 --batch_size 256
-```
+### Finding 4: Semantic Constraints Are Essential
+> **All adversarial examples pass deployment validity checks**
+>
+> Without constraints, defenses learn to detect nonsensical inputs rather than realistic threats.
 
-> 🚨 Watch out for the format of the datasets, it should be (.txt) not .arff or any other extension. The code relies on it.
-
-**Expected Output** :
-In results/:
-
-- `model.pth` — trained model
-- `artifacts.joblib` — scaler + encoders
-- `metrics.txt` — performance
-- `training curves` (\*.png)
-
-## Current Status
-
-| Stage               | Status                               |
-| ------------------- | ------------------------------------ |
-| Data Preprocessing  | ✅ Completed                         |
-| Model Training      | ✅ Neural network trained on NSL-KDD |
-| Baseline Accuracy   | ✅ ~78% (Normal vs Attack)           |
-| FGSM Implementation | 🔄 In Progress                       |
-| Defense Training    | 🔄 To-Do                             |
-| Final Report        | 🔄 Pending                           |
-
-**Files produced so far**
-
-| File                  | Purpose                              |
-| --------------------- | ------------------------------------ |
-| `train.py`            | Data prep + NN training pipeline     |
-| `results/model.pth`   | Saved model weights                  |
-| `results/metrics.txt` | Baseline accuracy & confusion matrix |
-| `results/*.png`       | Loss & accuracy curves               |
-
-## Team Members
-
-| Name            | Roles                                 |
-| --------------- | ------------------------------------- |
-| Kaoutar         | Model training & pipeline development |
-| <Team Member 2> | Adversarial attack implementation     |
-| <Team Member 3> | Defense strategies & analysis         |
-| <Team Member 4> | Report & evaluation                   |
-| <Team Member 5> | Dataset engineering                   |
-| Ayesha          | Documentation & reproducibility       |
+---
+**Course:** SOEN 321 - Information System Security  
+**Institution:** Concordia University, Montreal, Quebec, Canada  
 
 ## License
 
